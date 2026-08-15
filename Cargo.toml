@@ -1,0 +1,11 @@
+[package]
+name = "xynok_concurrency"
+version = "0.1.0"
+edition = "2024"
+
+
+[lints.clippy]
+redundant_field_names = "allow"
+too_many_arguments = "allow"
+
+[dependencies]
