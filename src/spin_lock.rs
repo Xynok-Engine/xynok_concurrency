@@ -1,6 +1,6 @@
 use crate::consts;
 use crate::sync::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::{AtomicBool, Ordering};
 
 pub struct SpinLock<T>
 {
@@ -32,7 +32,7 @@ impl<T> SpinLock<T>
         let mut counter = 0u32;
         loop
         {
-            if self.unlock_succeed()
+            if self.try_lock_weak()
             {
                 return SpinGuard { lock: self };
             }
@@ -45,16 +45,15 @@ impl<T> SpinLock<T>
                 }
                 else
                 {
-                    std::thread::yield_now();
+                    crate::sync::thread::yield_now();
                 }
             }
         }
     }
-
     #[inline]
     pub fn try_get(&self) -> Option<SpinGuard<'_, T>>
     {
-        if self.unlock_succeed()
+        if self.try_lock()
         {
             return Some(SpinGuard { lock: self });
         }
@@ -78,11 +77,15 @@ impl<T> SpinLock<T>
 impl<T> SpinLock<T>
 {
     #[inline]
-    fn unlock_succeed(&self) -> bool
+    fn try_lock(&self) -> bool
+    {
+        self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    }
+    #[inline]
+    fn try_lock_weak(&self) -> bool
     {
         self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
     }
-
     #[inline]
     fn is_locked(&self) -> bool
     {
@@ -126,5 +129,30 @@ impl<T> std::ops::Deref for SpinGuard<'_, T>
     fn deref(&self) -> &Self::Target
     {
         self.lock.val.with(|p| unsafe { &*p })
+    }
+}
+
+#[cfg(test)]
+mod test
+{
+
+    #![cfg(loom)]
+    use super::SpinLock;
+    use loom::sync::Arc;
+
+    #[test]
+    fn mutual_exclusion()
+    {
+        loom::model(|| {
+            // ← loom chạy closure này hàng nghìn lần
+            let lock = Arc::new(SpinLock::new(0usize));
+            let l2 = Arc::clone(&lock);
+            let t = loom::thread::spawn(move || {
+                *l2.get() += 1;
+            });
+            *lock.get() += 1;
+            t.join().unwrap();
+            assert_eq!(*lock.get(), 2);
+        });
     }
 }
