@@ -1,6 +1,6 @@
 [package]
 name = "xynok_concurrency"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 
@@ -15,6 +15,7 @@ too_many_arguments = "allow"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dependencies]
+crossbeam = "0.8"
 xynok_std = { git = "https://github.com/Xynok-Engine/xynok_std.git", tag = "v0.1.17" }
 
 [target.'cfg(loom)'.dependencies]

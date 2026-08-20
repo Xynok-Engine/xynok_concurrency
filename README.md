@@ -4,5 +4,5 @@
 
 This repo stores the tools, utilities, and data types that allow Xynok Engine to handle multi-threading and asynchronous tasks.
 
-ok, sir, I surrender !!! I dont get it !!!? ! :smiling_face_with_tear:
-Tôi đã thử chạy và chúng chỉ đảm bảo là cùng trả 
+- `src/lazy_atomic/`: contains park/unpark atomic types
+- `src/lockfree_atomic/`: contains lock-free atomic types

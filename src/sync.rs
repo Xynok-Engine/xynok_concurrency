@@ -12,7 +12,7 @@ pub(crate) use loom::sync::{Arc, Condvar, Mutex};
 #[cfg(not(loom))]
 pub(crate) mod thread
 {
-    pub(crate) use std::thread::{current, park, yield_now, JoinHandle, Thread};
+    pub(crate) use std::thread::{JoinHandle, Thread, current, park, yield_now};
 
     /// Spawns a worker, giving it a name so it shows up as itself in a debugger or profiler
     /// rather than as `Thread-<a number>`.
@@ -26,7 +26,7 @@ pub(crate) mod thread
 #[cfg(loom)]
 pub(crate) mod thread
 {
-    pub(crate) use loom::thread::{current, park, yield_now, JoinHandle, Thread};
+    pub(crate) use loom::thread::{JoinHandle, Thread, current, park, yield_now};
 
     /// Loom's threads are cooperatively scheduled coroutines and carry no OS-level name, so the
     /// name is dropped here. Nothing in a loom model builds a real pool - see [`crate::pool`].
