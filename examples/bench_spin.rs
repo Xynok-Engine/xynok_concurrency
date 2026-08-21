@@ -8,11 +8,13 @@ const ITERS: usize = 1_000_000;
 
 fn bench<F: Fn() + Send + Sync + 'static + Clone>(name: &str, threads: usize, f: F)
 {
-    let start = Instant::now();
+    let barrier = Arc::new(std::sync::Barrier::new(threads + 1));
     let hs: Vec<_> = (0..threads)
         .map(|_| {
             let f = f.clone();
+            let barrier = barrier.clone();
             std::thread::spawn(move || {
+                barrier.wait();
                 for _ in 0..ITERS
                 {
                     f()
@@ -20,6 +22,8 @@ fn bench<F: Fn() + Send + Sync + 'static + Clone>(name: &str, threads: usize, f:
             })
         })
         .collect();
+    barrier.wait();
+    let start = Instant::now();
     for h in hs
     {
         h.join().unwrap();
@@ -27,7 +31,6 @@ fn bench<F: Fn() + Send + Sync + 'static + Clone>(name: &str, threads: usize, f:
     let el = start.elapsed();
     println!("  {name:<30} {:>8.1} ns/op", el.as_nanos() as f64 / (ITERS * threads) as f64);
 }
-
 fn main()
 {
     for threads in [1usize, 2, 4, 8]

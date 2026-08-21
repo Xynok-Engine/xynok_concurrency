@@ -20,6 +20,15 @@ unsafe impl<T: Sync> Sync for SpinGuard<'_, T> {}
 
 impl<T> SpinLock<T>
 {
+    #[cfg(not(loom))]
+    pub const fn new(val: T) -> Self
+    {
+        Self {
+            val:    UnsafeCell::new(val),
+            locked: CachePadded::new(AtomicBool::new(false)),
+        }
+    }
+    #[cfg(loom)]
     pub fn new(val: T) -> Self
     {
         Self {
@@ -31,24 +40,34 @@ impl<T> SpinLock<T>
     #[inline]
     pub fn get(&self) -> SpinGuard<'_, T>
     {
-        let mut counter = 0u32;
+        if self.try_lock_weak()
+        {
+            return SpinGuard { lock: self };
+        }
+        self.get_contended()
+    }
+
+    #[cold]
+    fn get_contended(&self) -> SpinGuard<'_, T>
+    {
+        let mut spins = 0u32;
         loop
         {
-            if self.try_lock_weak()
-            {
-                return SpinGuard { lock: self };
-            }
             while self.is_locked()
             {
-                if counter < consts::SPIN_LIMIT
+                if spins < consts::SPIN_LIMIT
                 {
-                    counter += 1;
+                    spins += 1;
                     crate::sync::spin_loop();
                 }
                 else
                 {
                     crate::sync::thread::yield_now();
                 }
+            }
+            if self.try_lock_weak()
+            {
+                return SpinGuard { lock: self };
             }
         }
     }
