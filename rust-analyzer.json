@@ -1,0 +1,7 @@
+{
+  "rust-analyzer": {
+    "cargo": {
+      "cfgs": ["debug_assertions", "miri", "loom"]
+    }
+  }
+}

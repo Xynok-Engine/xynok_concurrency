@@ -1,6 +1,6 @@
 pub mod mutex_condition;
 pub mod apis;
-pub mod spin_lock;
+pub mod spinlock;
 pub mod consts;
 mod thread_pool;
 pub(crate) mod utils;

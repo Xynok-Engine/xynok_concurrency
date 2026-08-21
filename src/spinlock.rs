@@ -1,3 +1,5 @@
+use crossbeam::utils::CachePadded;
+
 use crate::consts;
 use crate::sync::cell::UnsafeCell;
 use crate::sync::{AtomicBool, Ordering};
@@ -5,7 +7,7 @@ use crate::sync::{AtomicBool, Ordering};
 pub struct SpinLock<T>
 {
     val:    UnsafeCell<T>,
-    locked: AtomicBool,
+    locked: CachePadded<AtomicBool>,
 }
 pub struct SpinGuard<'a, T>
 {
@@ -22,7 +24,7 @@ impl<T> SpinLock<T>
     {
         Self {
             val:    UnsafeCell::new(val),
-            locked: AtomicBool::new(false),
+            locked: CachePadded::new(AtomicBool::new(false)),
         }
     }
 
