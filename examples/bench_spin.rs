@@ -1,5 +1,3 @@
-//! Why `atomic.rs` has no lock in it: a spin lock around a single word loses to every lock-free
-//! alternative, and at high thread counts it loses to `std::sync::Mutex` too.
 use std::sync::Arc;
 use std::time::Instant;
 use xynok_concurrency::spinlock::SpinLock;

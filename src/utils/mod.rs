@@ -1,6 +1,10 @@
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU8};
+
+pub mod backoff;
+pub mod latch;
+pub mod cache_padded;
 
 #[inline]
 pub fn ignore_poison<G>(result: std::sync::LockResult<G>) -> G

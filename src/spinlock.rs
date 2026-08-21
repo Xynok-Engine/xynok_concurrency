@@ -1,8 +1,7 @@
-use crossbeam::utils::CachePadded;
-
-use crate::consts;
 use crate::sync::cell::UnsafeCell;
 use crate::sync::{AtomicBool, Ordering};
+use crate::utils::backoff::Backoff;
+use crate::utils::cache_padded::CachePadded;
 
 pub struct SpinLock<T>
 {
@@ -47,30 +46,6 @@ impl<T> SpinLock<T>
         self.get_contended()
     }
 
-    #[cold]
-    fn get_contended(&self) -> SpinGuard<'_, T>
-    {
-        let mut spins = 0u32;
-        loop
-        {
-            while self.is_locked()
-            {
-                if spins < consts::SPIN_LIMIT
-                {
-                    spins += 1;
-                    crate::sync::spin_loop();
-                }
-                else
-                {
-                    crate::sync::thread::yield_now();
-                }
-            }
-            if self.try_lock_weak()
-            {
-                return SpinGuard { lock: self };
-            }
-        }
-    }
     #[inline]
     pub fn try_get(&self) -> Option<SpinGuard<'_, T>>
     {
@@ -97,6 +72,19 @@ impl<T> SpinLock<T>
 
 impl<T> SpinLock<T>
 {
+    #[cold]
+    fn get_contended(&self) -> SpinGuard<'_, T>
+    {
+        let mut backoff = Backoff::new();
+        loop
+        {
+            if !self.is_locked() && self.try_lock_weak()
+            {
+                return SpinGuard { lock: self };
+            }
+            backoff.snooze();
+        }
+    }
     #[inline]
     fn try_lock(&self) -> bool
     {
