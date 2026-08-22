@@ -23,5 +23,19 @@ cargo run --release --example bench_spin      # This runs `examples/bench_spin.r
 LOOM_LOCATION=1 RUSTFLAGS="--cfg loom" cargo test --lib
 ```
 
+**`miri` test**
 
+Miri interprets the code against the C++ weak memory model, so it catches missing
+`Acquire`/`Release` pairs that x86 and ARM64 hardware happen to hide at runtime.
 
+```bash
+rustup component add miri       # one-off; the toolchain is already pinned to nightly
+cargo miri test --lib
+cargo miri test --lib waker     # only the tests whose name contains `waker`
+```
+
+Each run explores one fixed interleaving. To sweep several:
+
+```bash
+MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo miri test --lib
+```
