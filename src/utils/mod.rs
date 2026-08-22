@@ -1,9 +1,10 @@
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU8};
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
 
+pub mod spinlock;
 pub mod backoff;
-pub mod latch;
+pub mod waker;
 pub mod cache_padded;
 
 #[inline]

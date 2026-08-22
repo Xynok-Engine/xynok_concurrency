@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
-use xynok_concurrency::spinlock::SpinLock;
+use xynok_concurrency::utils::spinlock::SpinLock;
 
 const ITERS: usize = 1_000_000;
 
