@@ -1,6 +1,6 @@
 [package]
 name = "xynok_concurrency"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 
 
@@ -18,5 +18,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 paste = "1.0.15"
 xynok_std = { git = "https://github.com/Xynok-Engine/xynok_std.git", tag = "v0.1.17" }
 
+
+
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
+
+[dev-dependencies]
+divan = "0.1.21"

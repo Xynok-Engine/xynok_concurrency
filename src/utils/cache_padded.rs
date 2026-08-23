@@ -96,7 +96,7 @@ impl<T> CachePadded<T>
         Self { value: t }
     }
 
-    pub fn into_inner(self) -> T
+    pub fn take(self) -> T
     {
         self.value
     }

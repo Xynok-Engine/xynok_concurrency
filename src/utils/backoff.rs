@@ -57,6 +57,16 @@ impl Backoff
     {
         self.step > YIELD_LIMIT
     }
+    #[inline]
+    pub fn rounds(&self) -> u32
+    {
+        self.step
+    }
+    #[inline]
+    pub fn reset(&mut self)
+    {
+        self.step = 0;
+    }
 }
 
 impl std::fmt::Debug for Backoff

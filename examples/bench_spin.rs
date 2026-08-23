@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
+use xynok_concurrency::mutex_condition::MutexCondition;
 use xynok_concurrency::utils::spinlock::SpinLock;
 
 const ITERS: usize = 1_000_000;
@@ -48,6 +49,14 @@ fn main()
             let m = m.clone();
             bench("std::sync::Mutex", threads, move || {
                 *m.lock().unwrap() += 1;
+            });
+        }
+
+        let m = Arc::new(MutexCondition::new(0usize));
+        {
+            let m = m.clone();
+            bench("MutexCondition", threads, move || {
+                *m.get() += 1;
             });
         }
     }
