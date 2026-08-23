@@ -84,17 +84,12 @@ impl<T> QueueBatching<T>
         self.get().enqueue(val);
     }
 
-    pub fn push_batch<I>(&self, values: I) -> usize
+    #[inline]
+    pub fn push_batch<I>(&self, values: I)
     where I: IntoIterator<Item = T>
     {
-        let mut pushed = 0;
         let mut elements = self.get();
-        for value in values
-        {
-            elements.enqueue(value);
-            pushed += 1;
-        }
-        pushed
+        elements.enqueue_batch(values);
     }
 }
 
@@ -114,33 +109,21 @@ impl<T> QueueBatching<T>
         }
 
         let mut elements = self.get();
-
-        out.reserve(limit.min(elements.len()));
-
-        let mut taken = 0;
-        while taken < limit
-        {
-            let Some(value) = elements.dequeue()
-            else
-            {
-                break;
-            };
-            out.push(value);
-            taken += 1;
-        }
-        taken
-    }
-
-    pub fn pop_batch_with<F>(&self, limit: usize, mut f: F) -> usize
-    where F: FnMut(T)
-    {
-        let mut batch = Vec::new();
-        let taken = self.pop_batch(&mut batch, limit);
-        for value in batch
-        {
-            f(value);
-        }
-        taken
+        elements.dequeue_batch(limit, out)
+        //out.reserve(limit.min(elements.len()));
+        //
+        //let mut taken = 0;
+        //while taken < limit
+        //{
+        //    let Some(value) = elements.dequeue()
+        //    else
+        //    {
+        //        break;
+        //    };
+        //    out.push(value);
+        //    taken += 1;
+        //}
+        //taken
     }
 
     #[inline]
@@ -352,10 +335,12 @@ mod test
     fn push_batch_dem_dung_so_phan_tu()
     {
         let queue = QueueBatching::with_capacity(8);
-
-        assert_eq!(queue.push_batch(0..5), 5);
-        assert_eq!(queue.push_batch(std::iter::empty::<i32>()), 0);
-        assert_eq!(queue.push_batch(vec![5, 6]), 2);
+        queue.push_batch(0..5);
+        queue.push_batch(std::iter::empty::<i32>());
+        queue.push_batch(vec![5, 6]);
+        //assert_eq!(queue.push_batch(0..5), 5);
+        //assert_eq!(queue.push_batch(std::iter::empty::<i32>()), 0);
+        //assert_eq!(queue.push_batch(vec![5, 6]), 2);
 
         let mut out = Vec::new();
         assert_eq!(queue.drain_into(&mut out), 7);
@@ -379,27 +364,6 @@ mod test
         assert_eq!(out, vec![-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         assert_eq!(queue.pop_batch(&mut out, 4), 0, "rỗng thì trả 0");
-    }
-
-    #[test]
-    fn pop_batch_with_chay_ngoai_khoa()
-    {
-        let queue = QueueBatching::new();
-        queue.push_batch(0..4);
-
-        let mut seen = Vec::new();
-        let taken = queue.pop_batch_with(2, |value| {
-            assert!(!queue.is_locked(), "`f` không được chạy khi còn giữ khoá");
-            seen.push(value);
-            queue.push(value + 100);
-        });
-
-        assert_eq!(taken, 2);
-        assert_eq!(seen, vec![0, 1]);
-
-        let mut out = Vec::new();
-        queue.drain_into(&mut out);
-        assert_eq!(out, vec![2, 3, 100, 101]);
     }
 
     #[test]

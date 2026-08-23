@@ -547,7 +547,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "xynok_concurrency"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "divan",
  "loom",
@@ -557,8 +557,8 @@ dependencies = [
 
 [[package]]
 name = "xynok_std"
-version = "0.1.17"
-source = "git+https://github.com/Xynok-Engine/xynok_std.git?tag=v0.1.17#7d4f09a229c1fe4661692896b7112af8c8c9d27d"
+version = "0.1.18"
+source = "git+https://github.com/Xynok-Engine/xynok_std.git?tag=v0.1.18#86f2f337fb2dfde5fa2096ab22bb68a8cf80e5e8"
 dependencies = [
  "log",
  "paste",
@@ -571,7 +571,7 @@ dependencies = [
 [[package]]
 name = "xynok_std_proc_macro"
 version = "0.0.1"
-source = "git+https://github.com/Xynok-Engine/xynok_std.git?tag=v0.1.17#7d4f09a229c1fe4661692896b7112af8c8c9d27d"
+source = "git+https://github.com/Xynok-Engine/xynok_std.git?tag=v0.1.18#86f2f337fb2dfde5fa2096ab22bb68a8cf80e5e8"
 dependencies = [
  "proc-macro2",
  "quote",

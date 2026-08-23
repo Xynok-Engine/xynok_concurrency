@@ -4,10 +4,11 @@ use std::mem::{ManuallyDrop, MaybeUninit};
 
 use crate::sync::cell::UnsafeCell;
 
-const INLINE_BYTES: usize = 48;
+const INLINE_BYTES: usize = 112;
 pub trait Runnable: FnOnce() + Send + 'static {}
 impl<F> Runnable for F where F: FnOnce() + Send + 'static {}
-#[repr(C)]
+
+#[repr(C, align(128))]
 pub struct InlineFn
 {
     v_table:  &'static VTable,
@@ -155,20 +156,34 @@ mod test
         let p0: fn() = empty_fn;
         let p1: fn(u64) = params_fn;
         let p2: fn(u64, u64) = params_fn2;
+        let p3 = || {
+            let x: u64 = 10;
+            let y: [u64; 20] = [1u64; 20];
+            for i in y
+            {
+                println!("x {}: - i:{}", x, i);
+            }
+        };
         println!("size_of::<fn()>():        {} bytes (fn pointer)", size_of_val(&p0));
         println!("size_of::<fn(u64)>():     {} bytes (fn pointer)", size_of_val(&p1));
         println!("size_of::<fn(u64,u64)>(): {} bytes (fn pointer)", size_of_val(&p2));
+        println!("size_of::<fn_closure>():  {} bytes (fn pointer)", size_of_val(&p3));
 
         println!("size of FnBox:   {} bytes", size_of::<FnBox>());
         println!("size of Vtable:  {} bytes", size_of::<VTable>());
     }
 
     /// Con số ở đầu file phải đúng, nếu không thì cả lý do tồn tại của nó là sai.
+    ///
+    /// Đúng 128 byte, căn 128: một job = đúng một cặp cache line, không thừa một byte đệm nào.
     #[test]
-    fn mot_cache_line()
+    fn mot_cap_cache_line()
     {
-        assert_eq!(size_of::<InlineFn>(), 64);
-        assert_eq!(align_of::<InlineFn>(), 16);
+        assert_eq!(size_of::<InlineFn>(), 128);
+        assert_eq!(align_of::<InlineFn>(), 128);
+        // `v_table` 8 byte nằm ở offset 0, buffer phải căn `align_of::<FnBox>()` nên bắt đầu ở
+        // đúng offset đó. Hai số này cộng lại lấp kín 128 thì không còn byte đệm nào ở cuối.
+        assert_eq!(align_of::<FnBox>() + INLINE_BYTES, 128, "vtable + đệm + buffer phải lấp kín 128 byte");
     }
 
     #[test]
@@ -251,11 +266,17 @@ mod test
         }));
 
         let mut ran = 0;
+        let mut batch = Vec::new();
+        while queue.pop_batch(&mut batch, 16) > 0
         {
-            ran += 1;
+            for job in batch.drain(..)
+            {
+                job.run_once();
+                ran += 1;
+            }
         }
 
-        assert!(ran > 0);
+        assert_eq!(ran, 100, "mọi job đẩy vào đều phải được rút ra và chạy đúng một lần");
         assert_eq!(counter.load(Ordering::Relaxed), (0..100).sum::<usize>());
     }
 
