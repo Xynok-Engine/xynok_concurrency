@@ -4,40 +4,41 @@ use std::mem::{ManuallyDrop, MaybeUninit};
 
 use crate::sync::cell::UnsafeCell;
 
-const INLINE_BYTES: usize = 112;
-pub trait Runnable: FnOnce() + Send + 'static {}
-impl<F> Runnable for F where F: FnOnce() + Send + 'static {}
-
-#[repr(C, align(128))]
-pub struct InlineFn
-{
-    v_table:  &'static VTable,
-    fn_boxed: UnsafeCell<FnBox>,
-}
-unsafe impl Send for InlineFn {}
+// TODO: need a test with a 128-byte value for x86_64
+const INLINE_BYTES: usize = 48;
 
 #[repr(C, align(16))]
-struct FnBox
+struct FnBuffer
 {
     buffer: [MaybeUninit<u8>; INLINE_BYTES],
 }
+#[repr(C)]
+pub struct InlineFn
+{
+    vtable:    &'static VTable,
+    fn_buffer: UnsafeCell<FnBuffer>,
+}
+unsafe impl Send for InlineFn {}
+
 struct VTable
 {
-    runner:  fn(*mut FnBox),
-    dropper: fn(*mut FnBox),
+    runner:  fn(*mut FnBuffer),
+    dropper: fn(*mut FnBuffer),
 }
 struct VTableAlias<F>(PhantomData<F>);
+pub trait Runnable: FnOnce() + Send + 'static {}
+impl<F> Runnable for F where F: FnOnce() + Send + 'static {}
 
 impl InlineFn
 {
     pub const fn is_fit<F>() -> bool
     {
-        size_of::<F>() <= INLINE_BYTES && align_of::<F>() <= align_of::<FnBox>()
+        size_of::<F>() <= INLINE_BYTES && align_of::<F>() <= align_of::<FnBuffer>()
     }
     #[inline]
     pub fn new<F: Runnable>(f: F) -> Self
     {
-        let mut f_box = FnBox::new();
+        let mut f_box = FnBuffer::new();
 
         let v_table = unsafe {
             match Self::is_fit::<F>()
@@ -55,15 +56,15 @@ impl InlineFn
             }
         };
         Self {
-            v_table:  v_table,
-            fn_boxed: UnsafeCell::new(f_box),
+            vtable:    v_table,
+            fn_buffer: UnsafeCell::new(f_box),
         }
     }
     #[inline]
     pub fn run_once(self)
     {
         let this = ManuallyDrop::new(self);
-        (this.v_table.runner)(this.fn_boxed.with_mut(|p| p))
+        (this.vtable.runner)(this.fn_buffer.with_mut(|p| p))
     }
     //#[inline]
     //pub fn run(&self)
@@ -76,7 +77,7 @@ impl Drop for InlineFn
 {
     fn drop(&mut self)
     {
-        (self.v_table.dropper)(self.fn_boxed.with_mut(|p| p));
+        (self.vtable.dropper)(self.fn_buffer.with_mut(|p| p));
     }
 }
 impl std::fmt::Debug for InlineFn
@@ -97,30 +98,30 @@ impl<F: Runnable> VTableAlias<F>
         runner:  Self::run_boxed,
         dropper: Self::drop_boxed,
     };
-    fn run_inline(f_box: *mut FnBox)
+    fn run_inline(f_box: *mut FnBuffer)
     {
         let f = unsafe { f_box.cast::<F>().read() };
         f();
     }
-    fn drop_inline(f_box: *mut FnBox)
+    fn drop_inline(f_box: *mut FnBuffer)
     {
         unsafe {
             f_box.cast::<F>().drop_in_place();
         }
     }
-    fn run_boxed(f_box: *mut FnBox)
+    fn run_boxed(f_box: *mut FnBuffer)
     {
         let f = unsafe { f_box.cast::<Box<F>>().read() };
         f();
     }
-    fn drop_boxed(f_box: *mut FnBox)
+    fn drop_boxed(f_box: *mut FnBuffer)
     {
         unsafe {
             f_box.cast::<Box<F>>().drop_in_place();
         }
     }
 }
-impl FnBox
+impl FnBuffer
 {
     #[inline]
     pub fn new() -> Self
@@ -169,21 +170,17 @@ mod test
         println!("size_of::<fn(u64,u64)>(): {} bytes (fn pointer)", size_of_val(&p2));
         println!("size_of::<fn_closure>():  {} bytes (fn pointer)", size_of_val(&p3));
 
-        println!("size of FnBox:   {} bytes", size_of::<FnBox>());
+        println!("size of FnBox:   {} bytes", size_of::<FnBuffer>());
         println!("size of Vtable:  {} bytes", size_of::<VTable>());
     }
 
-    /// Con số ở đầu file phải đúng, nếu không thì cả lý do tồn tại của nó là sai.
-    ///
-    /// Đúng 128 byte, căn 128: một job = đúng một cặp cache line, không thừa một byte đệm nào.
     #[test]
     fn mot_cap_cache_line()
     {
-        assert_eq!(size_of::<InlineFn>(), 128);
-        assert_eq!(align_of::<InlineFn>(), 128);
-        // `v_table` 8 byte nằm ở offset 0, buffer phải căn `align_of::<FnBox>()` nên bắt đầu ở
-        // đúng offset đó. Hai số này cộng lại lấp kín 128 thì không còn byte đệm nào ở cuối.
-        assert_eq!(align_of::<FnBox>() + INLINE_BYTES, 128, "vtable + đệm + buffer phải lấp kín 128 byte");
+        assert_eq!(size_of::<InlineFn>(), 64);
+        assert_eq!(align_of::<InlineFn>(), 16);
+
+        assert_eq!(align_of::<FnBuffer>() + INLINE_BYTES, 64, "vtable + đệm + buffer phải lấp kín 64 byte");
     }
 
     #[test]
@@ -192,7 +189,6 @@ mod test
         assert!(InlineFn::is_fit::<[u8; INLINE_BYTES]>());
         assert!(!InlineFn::is_fit::<[u8; INLINE_BYTES + 1]>());
 
-        // Closure bắt một `u32`: đúng cái hình dạng mà `Box<dyn FnOnce()>` phí nhất.
         let id = 7u32;
         let closure = move || assert_eq!(id, 7);
         assert!(
@@ -205,12 +201,11 @@ mod test
     #[test]
     fn closure_to_van_chay_dung()
     {
-        let big = [9u64; 32]; // 256 byte, chắc chắn phải vào Box
+        let big = [9u64; 32];
         let job = InlineFn::new(move || assert_eq!(big[31], 9));
         job.run_once();
     }
 
-    /// Job bị thả mà không chạy — đường đi lúc shutdown. Không được rò rỉ, cũng không được chạy.
     #[test]
     fn tha_ma_khong_chay()
     {
@@ -251,7 +246,6 @@ mod test
         assert_eq!(ran.load(Ordering::Relaxed), 0, "thả thì không được chạy");
     }
 
-    /// Lý do cả hai file tồn tại: một hàng đợi job chạy được mà đường nóng không chạm heap.
     #[test]
     fn chay_qua_queue_batching()
     {
@@ -280,8 +274,6 @@ mod test
         assert_eq!(counter.load(Ordering::Relaxed), (0..100).sum::<usize>());
     }
 
-    /// Job chưa chạy mà hàng đợi bị drop (shutdown giữa chừng) thì mọi thứ chúng bắt vẫn phải được
-    /// thả — đây là chỗ `Box<dyn FnOnce()>` bị quên hay rò rỉ nhất.
     #[test]
     fn queue_drop_keo_theo_job_chua_chay()
     {
