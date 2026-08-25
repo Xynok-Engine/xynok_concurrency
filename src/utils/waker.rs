@@ -72,7 +72,7 @@ impl Drop for WakerSignal<'_>
 #[cfg(all(test, not(loom)))]
 mod test
 {
-    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::sync::mpsc::{RecvTimeoutError, channel};
     use std::thread::JoinHandle;
     use std::time::Duration;
 
@@ -90,14 +90,7 @@ mod test
 
     const fn scaled(n: usize) -> usize
     {
-        if n / SCALE == 0
-        {
-            1
-        }
-        else
-        {
-            n / SCALE
-        }
+        if n / SCALE == 0 { 1 } else { n / SCALE }
     }
 
     /// xorshift64. No `rand` dependency, and the same seed replays the same pressure pattern, so a
@@ -400,8 +393,8 @@ mod test
 mod loom_test
 {
     use super::Waker;
-    use crate::sync::cell::UnsafeCell;
     use crate::sync::Arc;
+    use crate::sync::cell::UnsafeCell;
 
     /// Two workers plus the waiter is already three of `loom`'s four thread slots.
     const WORKERS: usize = 2;

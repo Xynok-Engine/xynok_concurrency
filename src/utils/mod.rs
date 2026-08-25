@@ -10,6 +10,17 @@ pub mod queue_batching;
 pub mod inline_fn;
 
 #[inline]
+pub const fn pack(a: u32, b: u32) -> u64
+{
+    (a as u64) << 32 | (b as u64)
+}
+#[inline]
+pub const fn unpack(val: u64) -> (u32, u32)
+{
+    ((val >> 32) as u32, val as u32)
+}
+
+#[inline]
 pub fn ignore_poison<G>(result: std::sync::LockResult<G>) -> G
 {
     result.unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -37,4 +48,24 @@ const fn can_transmute<A, B>() -> bool
 const fn is_zero_sized<T>() -> bool
 {
     size_of::<T>() == 0
+}
+#[cfg(test)]
+mod test
+{
+    use super::*;
+    #[test]
+    fn test_packing()
+    {
+        let a: u32 = 23;
+        let b: u32 = 1;
+        println!("a:       {:08b}", a);
+        println!("b:       {:08b}", b);
+        let packed = pack(a, b);
+        println!("packed:  {:08b}", packed);
+        let (left, right) = unpack(packed);
+        println!("left:    {:08b}", left);
+        println!("right:   {:08b}", right);
+        assert!(left == a);
+        assert!(right == b);
+    }
 }

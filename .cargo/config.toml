@@ -1,0 +1,10 @@
+# `cargo t <lọc>` — chạy test của lib, chỉ in phần thất bại.
+#   -q  : bỏ danh sách 87 dòng "test ... ok", chỉ còn dấu chấm + khối `failures:`
+#   --lib: bỏ qua doc-test và các target khác cho vòng lặp sửa–chạy nhanh hơn
+[alias]
+t = ["test", "--lib", "-q"]
+
+[env]
+# Backtrace mặc định tắt: dòng "note: run with RUST_BACKTRACE=1" gọn hơn nhiều so với 30 khung
+# stack của libtest. Cần xem thì chạy `RUST_BACKTRACE=1 cargo t <tên test>` để ghi đè.
+RUST_BACKTRACE = { value = "0", force = false }
