@@ -8,6 +8,8 @@ pub mod waker;
 pub mod cache_padded;
 pub mod queue_batching;
 pub mod inline_fn;
+pub mod slots;
+pub mod steal;
 
 #[inline]
 pub const fn pack(a: u32, b: u32) -> u64

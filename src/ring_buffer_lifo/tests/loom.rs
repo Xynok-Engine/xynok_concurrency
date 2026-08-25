@@ -1,0 +1,107 @@
+use super::*;
+
+#[test]
+fn chu_va_trom_cung_gianh_job_cuoi_khong_ai_lay_trung()
+{
+    loom::model(|| {
+        let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
+
+        let mut tx = unsafe { ring.producer() };
+        tx.push(1).unwrap();
+
+        let other = loom::sync::Arc::clone(&ring);
+        let thief = loom::thread::spawn(move || other.consumer().steal());
+
+        let mine = tx.pop();
+
+        let mut all: Vec<u32> = mine.into_iter().chain(thief.join().unwrap()).collect();
+        all.sort_unstable();
+        assert_eq!(all, vec![1], "một job, không được mất và không được nhân đôi");
+    });
+}
+
+#[test]
+fn chu_va_trom_tren_hai_job()
+{
+    loom::model(|| {
+        let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
+
+        let mut tx = unsafe { ring.producer() };
+        tx.push(1).unwrap();
+        tx.push(2).unwrap();
+
+        let other = loom::sync::Arc::clone(&ring);
+        let thief = loom::thread::spawn(move || other.consumer().steal());
+
+        let mut mine = Vec::new();
+        while let Some(val) = tx.pop()
+        {
+            mine.push(val);
+        }
+
+        mine.extend(thief.join().unwrap());
+        mine.sort_unstable();
+        assert_eq!(mine, vec![1, 2], "hai job, không được mất và không được nhân đôi");
+    });
+}
+
+#[test]
+fn trom_thay_bottom_moi_thi_thay_ca_job()
+{
+    loom::model(|| {
+        let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
+
+        let other = loom::sync::Arc::clone(&ring);
+        let thief = loom::thread::spawn(move || other.consumer().steal());
+
+        let mut tx = unsafe { ring.producer() };
+        tx.push(7).unwrap();
+
+        match thief.join().unwrap()
+        {
+            Some(val) => assert_eq!(val, 7),
+            None => assert_eq!(tx.pop(), Some(7), "trộm không kịp thì job phải còn nguyên"),
+        }
+    });
+}
+
+#[test]
+fn chu_khong_ghi_de_len_o_ke_trom_dang_be()
+{
+    loom::model(|| {
+        let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
+
+        let mut tx = unsafe { ring.producer() };
+        tx.push(1).unwrap();
+        tx.push(2).unwrap();
+
+        let other = loom::sync::Arc::clone(&ring);
+        let thief = loom::thread::spawn(move || other.consumer().steal());
+
+        let mut mine = Vec::new();
+        while let Some(val) = tx.pop()
+        {
+            mine.push(val);
+        }
+
+        for _ in 0..2
+        {
+            if tx.push(3).is_ok()
+            {
+                break;
+            }
+            loom::thread::yield_now();
+        }
+
+        mine.extend(thief.join().unwrap());
+        while let Some(val) = tx.pop()
+        {
+            mine.push(val);
+        }
+        mine.sort_unstable();
+        assert!(
+            mine == vec![1, 2] || mine == vec![1, 2, 3],
+            "job cũ không được mất, không được nhân đôi: {mine:?}"
+        );
+    });
+}
