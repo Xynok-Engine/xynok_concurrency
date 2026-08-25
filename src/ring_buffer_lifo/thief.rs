@@ -55,7 +55,7 @@ impl<'a, T> Consumer<'a, T>
 
         fence(Ordering::SeqCst);
 
-        let bottom = self.ring.bottom.load(Ordering::Acquire);
+        let bottom = self.ring.bottom.load(Ordering::SeqCst);
         if (bottom.wrapping_sub(claim) as i32) <= 0
         {
             return Steal::Empty;
@@ -96,14 +96,6 @@ impl<'a, T> Consumer<'a, T>
             Steal::Busy => return Steal::Busy,
         };
 
-        {
-            let b = self.ring.bottom.load(Ordering::SeqCst);
-            let (rf, rc) = unpack(self.ring.top.load(Ordering::SeqCst));
-            assert!(
-                (b.wrapping_sub(start) as i32) > 0,
-                "STEAL PAST BOTTOM start={start} bottom={b} free={rf} claim={rc}"
-            );
-        }
         let val = unsafe { self.ring.slots.read(start) };
         self.release();
         Steal::Success(val)

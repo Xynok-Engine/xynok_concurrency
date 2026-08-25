@@ -166,3 +166,79 @@ fn chu_va_trom_gianh_job_cuoi_cung()
 
     assert_eq!(total, ROUNDS, "mỗi job phải được đúng một bên lấy");
 }
+
+#[test]
+fn ring_bon_o_hai_ke_trom_khong_dam_du_lieu()
+{
+    const TOTAL: u32 = 96;
+    const THIEVES: usize = 2;
+    const CAP: u32 = 4;
+    const LOT: usize = 4;
+
+    let mut ring = RingBufferLifo::<u32>::new(CAP);
+    let (mut tx, rx) = ring.split();
+    let done = AtomicBool::new(false);
+
+    let mut all: Vec<u32> = std::thread::scope(|scope| {
+        let thieves: Vec<_> = (0..THIEVES)
+            .map(|_| {
+                let done = &done;
+                scope.spawn(move || {
+                    let mut got = Vec::new();
+                    loop
+                    {
+                        match rx.try_steal()
+                        {
+                            Steal::Success(val) => got.push(val),
+                            Steal::Busy => std::thread::yield_now(),
+                            Steal::Empty =>
+                            {
+                                if done.load(Ordering::Acquire) && rx.is_empty()
+                                {
+                                    break got;
+                                }
+                                std::thread::yield_now();
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        let mut mine = Vec::new();
+        let mut pending = Vec::with_capacity(LOT);
+        for i in 0..TOTAL
+        {
+            pending.push(i);
+            if pending.len() < LOT
+            {
+                continue;
+            }
+            while !pending.is_empty()
+            {
+                if tx.push_batch(&mut pending) == 0 && tx.pop_batch(&mut mine, LOT) == 0
+                {
+                    std::thread::yield_now();
+                }
+            }
+        }
+        while !pending.is_empty()
+        {
+            if tx.push_batch(&mut pending) == 0 && tx.pop_batch(&mut mine, LOT) == 0
+            {
+                std::thread::yield_now();
+            }
+        }
+        done.store(true, Ordering::Release);
+        while tx.pop_batch(&mut mine, LOT) > 0
+        {}
+        for thief in thieves
+        {
+            mine.extend(thief.join().unwrap());
+        }
+        mine
+    });
+
+    all.sort_unstable();
+    assert!(all.iter().copied().eq(0..TOTAL), "mất hoặc nhân đôi job");
+}

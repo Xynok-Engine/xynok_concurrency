@@ -4,8 +4,9 @@
 
 This repo stores the tools, utilities, and data types that allow Xynok Engine to handle multi-threading and asynchronous tasks.
 
-- `src/lazy_atomic/`: contains park/unpark atomic types
-- `src/lockfree_atomic/`: contains lock-free atomic types
+- `src/ring_buffer_fifo/`: bounded lock-free work-stealing ring buffer, batch steal — see [docs/ring-buffer-fifo.md](docs/ring-buffer-fifo.md)
+- `src/ring_buffer_lifo/`: bounded Chase-Lev work-stealing deque, LIFO for the owner — see [docs/ring-buffer-lifo.md](docs/ring-buffer-lifo.md)
+- `src/utils/`: cache padding, backoff, spin lock, park/unpark waker, inline closures
 
 ## Examples
 
@@ -32,6 +33,7 @@ Miri interprets the code against the C++ weak memory model, so it catches missin
 rustup component add miri       # one-off; the toolchain is already pinned to nightly
 cargo miri test --lib
 cargo miri test --lib waker     # only the tests whose name contains `waker`
+cargo miri test --lib ring_buffer
 ```
 
 Each run explores one fixed interleaving. To sweep several:

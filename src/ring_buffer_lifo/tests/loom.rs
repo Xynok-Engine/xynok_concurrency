@@ -105,3 +105,72 @@ fn chu_khong_ghi_de_len_o_ke_trom_dang_be()
         );
     });
 }
+
+#[test]
+fn chu_day_them_trong_luc_trom_dang_be()
+{
+    loom::model(|| {
+        let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
+
+        let mut tx = unsafe { ring.producer() };
+        tx.push(1).unwrap();
+
+        let other = loom::sync::Arc::clone(&ring);
+        let thief = loom::thread::spawn(move || other.consumer().try_steal());
+
+        let mut mine = Vec::new();
+        let _ = tx.push(2);
+        if let Some(val) = tx.pop()
+        {
+            mine.push(val);
+        }
+        let _ = tx.push(3);
+
+        if let Steal::Success(val) = thief.join().unwrap()
+        {
+            mine.push(val);
+        }
+        while let Some(val) = tx.pop()
+        {
+            mine.push(val);
+        }
+
+        mine.sort_unstable();
+        mine.dedup();
+        assert!(mine.contains(&1), "job đầu không được mất: {mine:?}");
+    });
+}
+
+#[test]
+fn chu_day_theo_lo_trong_luc_trom_dang_be()
+{
+    loom::model(|| {
+        let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
+
+        let mut tx = unsafe { ring.producer() };
+        tx.push(1).unwrap();
+
+        let other = loom::sync::Arc::clone(&ring);
+        let thief = loom::thread::spawn(move || other.consumer().try_steal());
+
+        let mut mine = Vec::new();
+        if let Some(val) = tx.pop()
+        {
+            mine.push(val);
+        }
+        let mut vals = vec![2u32, 3];
+        tx.push_batch(&mut vals);
+
+        if let Steal::Success(val) = thief.join().unwrap()
+        {
+            mine.push(val);
+        }
+        while let Some(val) = tx.pop()
+        {
+            mine.push(val);
+        }
+        mine.sort_unstable();
+        mine.dedup();
+        assert!(mine.contains(&1), "job đầu không được mất: {mine:?}");
+    });
+}

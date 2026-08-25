@@ -1,7 +1,11 @@
-# Ring buffer work-stealing: ba ngón tay `steal`, `real`, `tail`
+# `ring_buffer_fifo` — ba ngón tay `steal`, `real`, `tail`
 
-Tài liệu này giải thích `src/ring_buffer/` từ **cội nguồn**: vì sao nó có hình dạng như bây giờ,
+Tài liệu này giải thích `src/ring_buffer_fifo/` từ **cội nguồn**: vì sao nó có hình dạng như bây giờ,
 và ba chỉ số bên trong nó hoạt động ra sao.
+
+Bản song sinh của nó là [`ring_buffer_lifo`](./ring-buffer-lifo.md) — chủ lấy ở đuôi, giữ được
+tính LIFO, đổi lại kẻ trộm chỉ bốc được **một** job mỗi lượt. Mục [1 nấc 5](#nấc-5--chase-lev-né-bằng-cách-đứng-hai-đầu)
+giải thích vì sao hai ràng buộc đó đi liền nhau. Chọn cái nào: xem cuối tài liệu này.
 
 Bố cục:
 
@@ -168,7 +172,7 @@ fn slot(&self, idx: u32) -> &UnsafeCell<MaybeUninit<T>>
 }
 ```
 
-`src/ring_buffer/mod.rs:201`. Đây là **chỗ duy nhất** trong toàn bộ module có phép mask. `tail`,
+`src/ring_buffer_fifo/mod.rs:201`. Đây là **chỗ duy nhất** trong toàn bộ module có phép mask. `tail`,
 `real`, `steal` không bao giờ bị mask.
 
 ### Ba vai
@@ -358,7 +362,7 @@ mọi thay đổi có kèm thứ tự bộ nhớ.
 
 ### 4.1 `Producer::push` — không CAS
 
-`src/ring_buffer/owner.rs:83`
+`src/ring_buffer_fifo/owner.rs:83`
 
 ```rust
 let tail = self.ring.tail.load(Ordering::Relaxed);  // chỉ mình ta ghi → luôn chính xác
@@ -378,7 +382,7 @@ tới lệnh `store` đó, với mọi thread khác thì cả lô **chưa tồn 
 
 ### 4.2 `Producer::pop` — một CAS, cùng đầu với kẻ trộm
 
-`src/ring_buffer/owner.rs:142`
+`src/ring_buffer_fifo/owner.rs:142`
 
 ```rust
 let next = match steal == real
@@ -397,7 +401,7 @@ làm hai nhịp.
 
 ### 4.3 `Consumer::claim` — nhịp 1, dán biển
 
-`src/ring_buffer/thief.rs:61`
+`src/ring_buffer_fifo/thief.rs:61`
 
 ```rust
 let (steal, real) = unpack(head);
@@ -419,7 +423,7 @@ Hai chi tiết đắt giá:
 
 ### 4.4 `Consumer::release` — nhịp 2, gỡ biển
 
-`src/ring_buffer/thief.rs:109`
+`src/ring_buffer_fifo/thief.rs:109`
 
 ```rust
 let (_, real) = unpack(head);
@@ -472,7 +476,7 @@ trị đi ra.**
 | không tách quyền hai lần | `split(&mut self)` mượn độc quyền suốt vòng đời hai thẻ (`mod.rs:126`) |
 | không đọc một ô hai lần | `drain_claimed` là `unsafe`, chỉ gọi sau một CAS thắng (`mod.rs:213`) |
 
-`RingBuffer::producer()` (`mod.rs:154`) là `unsafe` chính vì nó bỏ qua ràng buộc đầu: chỗ gọi phải
+`RingBufferFifo::producer()` (`mod.rs:154`) là `unsafe` chính vì nó bỏ qua ràng buộc đầu: chỗ gọi phải
 tự bảo đảm không bao giờ có hai `Producer` cùng sống. Hai `Producer` là hai thread cùng `store` vào
 `tail` — mất job và ghi đè lên nhau, im lặng.
 
@@ -488,7 +492,7 @@ Gọi `release()` ngay sau `claim()`, rồi mới chép.
 giá trị nửa cũ nửa mới; job mới của chủ biến mất trong im lặng.
 
 Đây là lỗi mà stress test gần như không bao giờ bắt được — phải để `loom` bắt
-(`src/ring_buffer/tests/loom.rs`).
+(`src/ring_buffer_fifo/tests/loom.rs`).
 
 ### 6.2 Đánh dấu "đang bê" bằng cách **hạ** `steal` thay vì **đẩy** `real`
 
@@ -517,7 +521,7 @@ Mốc bắt buộc là `steal` (`owner.rs:73`).
 
 **Vỡ:** ba chỉ số là bộ đếm vòng trên `u32`; so sánh chúng chỉ có một cách là lấy hiệu, và hiệu chỉ
 diễn giải được duy nhất khi mọi chỉ số luôn tiến và khoảng cách giữa chúng không bao giờ chạm nửa
-vòng. Đó là lý do `RingBuffer::new` chặn sức chứa ở `2^31` (`mod.rs:87`).
+vòng. Đó là lý do `RingBufferFifo::new` chặn sức chứa ở `2^31` (`mod.rs:87`).
 
 Giữ được luật này thì mọi lần đọc lệch nhịp chỉ cho ra một con số **cũ hơn** — không bao giờ ra một
 con số vô nghĩa. Đó là món lời lớn nhất của nấc 6 so với Chase-Lev.
@@ -539,17 +543,68 @@ double free.
 | muốn | gọi | ai gọi được |
 |---|---|---|
 | đặt một job | `Producer::push` → `Result<(), T>` | chủ |
-| đặt cả lô, công bố một lần | `Producer::push_batch(&mut Vec<T>)` | chủ |
+| đặt cả lô, công bố một lần | `Producer::push_batch(&mut Vec<T>)` → `usize` | chủ |
+| đặt từ một iterator, không cần `Vec` | `Producer::push_iter(impl IntoIterator)` → `usize` | chủ |
 | lấy một job | `Producer::pop` → `Option<T>` | chủ |
-| lấy cả lô, một CAS | `Producer::pop_batch(&mut Vec<T>, max)` | chủ |
+| lấy cả lô, một CAS | `Producer::pop_batch(&mut Vec<T>, max)` → `usize` | chủ |
+| lấy cả lô vào một sink bất kỳ | `Producer::pop_batch_with(max, impl FnMut(T))` | chủ |
+| ring đầy: nhả nửa hàng đợi ra ngoài | `Producer::spill_half(&mut Vec<T>)` → `usize` | chủ |
+| vét sạch (lúc shutdown) | `Producer::drain(&mut Vec<T>)` → `usize` | chủ |
 | bốc một job | `Consumer::steal` → `Option<T>` | ai cũng được |
-| bốc cả lô | `Consumer::steal_batch(&mut Vec<T>, max)` | ai cũng được |
-| bốc nửa số đang có | `Consumer::steal_half(&mut Vec<T>)` | ai cũng được |
-| còn chỗ trống không | `Producer::remaining` / `RingBuffer::occupied` | |
+| bốc một job, phân biệt rỗng/bận | `Consumer::try_steal` → `Steal<T>` | ai cũng được |
+| bốc cả lô | `Consumer::steal_batch(&mut Vec<T>, max)` → `usize` | ai cũng được |
+| bốc cả lô, phân biệt rỗng/bận | `Consumer::try_steal_batch(...)` → `Steal<usize>` | ai cũng được |
+| bốc nửa số đang có | `Consumer::steal_half(&mut Vec<T>)` → `usize` | ai cũng được |
+| bốc thẳng sang ring khác, **không cấp phát** | `Consumer::try_steal_into(&mut Producer)` → `Steal<usize>` | ai cũng được |
+| bốc vào một sink bất kỳ | `Consumer::try_steal_with(max, impl FnMut(T))` → `Steal<usize>` | ai cũng được |
+| còn chỗ trống không | `Producer::remaining` / `is_full` / `RingBufferFifo::occupied` | |
 | còn job không | `available` / `is_empty` | |
 
 `steal_half` là con số mặc định cho một vòng đi trộm: bốc sạch thì chủ ring buffer đói lại ngay và kẻ trộm
 kế tiếp cũng chẳng còn gì — công việc chỉ dồn từ chỗ này sang chỗ kia chứ không được chia.
+
+### `Steal<T>`: "rỗng" và "bận" là hai câu trả lời khác nhau
+
+```rust
+pub enum Steal<T> { Empty, Busy, Success(T) }
+```
+
+Một hàm trả `0` cho cả hai là một cái bẫy cho scheduler: **`Empty`** nghĩa là ring buffer này thật sự
+hết việc, đi tìm nạn nhân khác hoặc cho phép mình ngủ. **`Busy`** nghĩa là *có* việc nhưng ngay lúc
+này không lấy được — hoặc một kẻ trộm khác đang bê (`steal != real`), hoặc chỗ đích đã đầy. Ngủ khi
+thấy `Busy` là ngủ quên trên đống việc.
+
+`Steal::or_else` giữ đúng phân biệt đó khi duyệt nhiều nạn nhân: chỉ cần **một** nạn nhân trả `Busy`
+là kết quả tổng không bao giờ tụt xuống `Empty`.
+
+### Ba đường không cấp phát
+
+Trên đường chạy nóng của một pool, mọi lần `Vec` phải xin thêm chỗ là một lần vào allocator giữa
+lúc đang giành cache line. Ba đường sau tránh hẳn:
+
+| đường | vì sao không cấp phát |
+|---|---|
+| `try_steal_into(&mut Producer)` | chép thẳng từ ô của nạn nhân sang ô của mình, không qua `Vec` nào |
+| `try_steal_with` / `pop_batch_with` | nhận một closure `FnMut(T)`, chỗ gọi tự quyết chứa vào đâu |
+| `push_iter` | nhận iterator, không cần dựng `Vec` trung gian để rồi `drain` |
+
+`RingBufferFifo::new` cũng cấp phát mảng ô bằng `Box::new_uninit_slice` — một lần xin bộ nhớ, không
+có vòng lặp khởi tạo `N` phần tử.
+
+### Cache `steal` phía chủ
+
+`push` đọc `head` — cache line **dùng chung** với mọi kẻ trộm — để biết còn chỗ không. Làm việc đó
+mỗi lần `push` là trả giá tranh chấp cho một câu hỏi mà câu trả lời gần như luôn là "còn".
+
+`Producer` giữ một bản sao `steal` trong `Cell`. Vì `steal` **chỉ tiến**, một bản sao cũ luôn cho ra
+số chỗ trống **nhỏ hơn hoặc bằng** sự thật — nó có thể từ chối một `push` lẽ ra được, nhưng không
+bao giờ cho phép một `push` lẽ ra phải bị chặn. Chỉ khi bản sao nói "đầy" thì mới nạp lại `head`
+thật một lần.
+
+Điều ngược lại **không** đúng cho `push_batch`/`push_iter`: ở đó một bản sao cũ sẽ cắt ngắn cả lô,
+nên chúng luôn nạp `head` một lần trước khi tính. Một lần chạm cache line cho `n` job vẫn là món
+lời của việc gộp lô. Đây từng là một lỗi thật, và test
+`push_theo_lo_khong_bi_cache_cu_cat_ngan` là chỗ giữ nó không quay lại.
 
 ### Lấy thẻ quyền
 
@@ -563,15 +618,16 @@ kế tiếp cũng chẳng còn gì — công việc chỉ dồn từ chỗ này 
 
 | lệnh | cho thấy gì |
 |---|---|
-| `cargo run --example ring_buffer_oop` | ba chỉ số in ra sau từng bước, và ba thread thật cùng bốc — kèm một thread quan sát bắt trạng thái "đang bê dở" |
-| `cargo run --example ring_bank` | mô phỏng một luồng, dừng được giữa hai nhịp của kẻ trộm |
+| `cargo test --lib ring_buffer_fifo` | toàn bộ test đơn vị, stress và test hai nhịp của kẻ trộm |
 
 ### Test
 
 | lệnh | phạm vi |
 |---|---|
-| `cargo test` | `tests/unit.rs`, `tests/stress.rs`, `tests/thief.rs` |
-| `LOOM_LOCATION=1 RUSTFLAGS="--cfg loom" cargo test --lib ring_buffer` | `tests/loom.rs` — thử mọi thứ tự chen ngang |
+| `cargo test --lib` | `tests/unit.rs`, `tests/stress.rs`, `tests/thief.rs` |
+| `cargo miri test --lib ring_buffer_fifo` | một lịch chạy, soi UB |
+| `MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo miri test --lib ring_buffer_fifo` | nhiều lịch chạy |
+| `LOOM_LOCATION=1 RUSTFLAGS="--cfg loom" cargo test --lib ring_buffer_fifo` | `tests/loom.rs` — thử mọi thứ tự chen ngang |
 
 `loom` là thứ duy nhất bắt được lớp lỗi ở [§6.1](#61-gỡ-biển-trước-khi-chép-xong): thứ tự chen ngang
 gây ra nó hiếm tới mức chạy thật hàng triệu lần cũng có thể không gặp.
@@ -582,3 +638,20 @@ gây ra nó hiếm tới mức chạy thật hàng triệu lần cũng có thể
 - Blumofe & Leiserson, *Scheduling Multithreaded Computations by Work Stealing* (1994)
 - Chase & Lev, *Dynamic Circular Work-Stealing Deque* (2005)
 - `tokio/src/runtime/scheduler/multi_thread/queue.rs` — hàng đợi cục bộ với `head` gói `(steal, real)`
+
+---
+
+## 8. Chọn bản nào
+
+| | `ring_buffer_fifo` | `ring_buffer_lifo` |
+|---|---|---|
+| chủ lấy job | cũ nhất (FIFO) | **mới nhất** (LIFO) |
+| `pop` của chủ | một CAS mỗi lần | **không CAS** trên đường nóng |
+| kẻ trộm bốc | **cả lô** / nửa hàng đợi | **một job** mỗi lượt |
+| chỉ số đi lùi | không, cả ba chỉ tiến | có (`bottom`, đầu cơ) |
+| ordering | `AcqRel` là đủ | `SeqCst` trên `top` và `pop` |
+| trần sức chứa | `2^31` | `2^30` |
+| hợp với | injector, hàng đợi vào/ra, chỗ cần san tải theo lô | fork-join, `scope`, `parallel_for`, đệ quy chia đôi |
+
+Quy tắc ngắn: **hàng đợi cục bộ của worker → LIFO. Chỗ cần san một lô việc sang nơi khác → FIFO.**
+Một pool đầy đủ thường dùng cả hai. Chi tiết bên kia: [`ring_buffer_lifo`](./ring-buffer-lifo.md).

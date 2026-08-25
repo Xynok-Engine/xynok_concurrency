@@ -113,14 +113,6 @@ impl<'a, T> Producer<'a, T>
             return Err(val);
         }
 
-        {
-            let (rf, rc) = unpack(self.ring.top.load(Ordering::SeqCst));
-            assert!(
-                bottom.wrapping_sub(rf) < self.ring.capacity() as u32,
-                "PUSH OVERWRITE bottom={bottom} free={rf} claim={rc} cap={}",
-                self.ring.capacity()
-            );
-        }
         unsafe { self.ring.slots.write(bottom, val) };
         self.ring.bottom.store(bottom.wrapping_add(1), Ordering::Release);
         Ok(())
@@ -142,13 +134,7 @@ impl<'a, T> Producer<'a, T>
 
         for (offset, val) in vals.drain(..n).enumerate()
         {
-            let idx = bottom.wrapping_add(offset as u32);
-            let (rf, rc) = unpack(self.ring.top.load(Ordering::SeqCst));
-            assert!(
-                idx.wrapping_sub(rf) < self.ring.capacity() as u32,
-                "PUSH_BATCH OVERWRITE idx={idx} bottom={bottom} n={n} free={rf} claim={rc}"
-            );
-            unsafe { self.ring.slots.write(idx, val) };
+            unsafe { self.ring.slots.write(bottom.wrapping_add(offset as u32), val) };
         }
 
         self.ring.bottom.store(bottom.wrapping_add(n as u32), Ordering::Release);
@@ -179,7 +165,7 @@ impl<'a, T> Producer<'a, T>
     {
         let bottom = self.ring.bottom.load(Ordering::Relaxed);
         let next = bottom.wrapping_sub(1);
-        self.ring.bottom.store(next, Ordering::Relaxed);
+        self.ring.bottom.store(next, Ordering::SeqCst);
         fence(Ordering::SeqCst);
 
         let mut head = self.ring.top.load(Ordering::SeqCst);
@@ -192,7 +178,7 @@ impl<'a, T> Producer<'a, T>
 
             if size < 0
             {
-                self.ring.bottom.store(bottom, Ordering::Relaxed);
+                self.ring.bottom.store(bottom, Ordering::SeqCst);
                 return None;
             }
             if size > 0
@@ -211,7 +197,7 @@ impl<'a, T> Producer<'a, T>
             {
                 Ok(_) =>
                 {
-                    self.ring.bottom.store(bottom, Ordering::Relaxed);
+                    self.ring.bottom.store(bottom, Ordering::SeqCst);
                     return Some(unsafe { self.ring.slots.read(next) });
                 }
                 Err(actual) => head = actual,
