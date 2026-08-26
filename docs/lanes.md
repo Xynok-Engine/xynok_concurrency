@@ -10,7 +10,7 @@ last edited: 2026-06-06T01:07:20+07:00
 ---
 # Lanes and the job system in Xynok Engine
 
-![test image ref](docs/images/test_img.jpg)
+![test image ref](images/test_img.jpg)
 
 Tài liệu này chốt hai thứ:
 
