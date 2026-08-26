@@ -25,6 +25,7 @@ These three indices technically increase indefinitely. In practice, they will ev
 
 > [!IMPORTANT]
 > **Index Mapping and Performance**
+>
 > To convert these abstract indices into physical positions within the buffer, we map them using either a modulo operation or a bitwise mask. This design requires the buffer capacity to be a power of two. Using a power of two allows us to calculate the physical index rapidly using masking, which is significantly faster than the division required for a standard modulo operation.
 
 ## Operational Mechanism
