@@ -1,4 +1,16 @@
-# Lane và job system của Xynok Engine
+---
+title: "Lanes and the job system"
+excerpt:
+cover img:
+tags:
+  - core
+  - working
+creation date: 2026-06-02T02:51:00+07:00
+last edited: 2026-06-06T01:07:20+07:00
+---
+# Lanes and the job system in Xynok Engine
+
+![test image ref](docs/images/test_img.jpg)
 
 Tài liệu này chốt hai thứ:
 
