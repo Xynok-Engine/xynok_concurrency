@@ -1,3 +1,7 @@
+---
+excerpt:
+cover img:
+---
 # `ring_buffer_fifo` — ba ngón tay `steal`, `real`, `tail`
 hello, this is test text
 Tài liệu này giải thích `src/ring_buffer_fifo/` từ **cội nguồn**: vì sao nó có hình dạng như bây giờ,
