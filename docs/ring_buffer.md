@@ -1,13 +1,9 @@
 ---
+title: Ring Buffer
 excerpt: A data structure that helps us minimize contention between threads.
 cover img: https://upload.wikimedia.org/wikipedia/commons/thumb/f/fd/Circular_Buffer_Animation.gif/500px-Circular_Buffer_Animation.gif?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
 ---
-# Ring Buffer
-
 ## Overview
-## The Thread Pool Challenge
-
-## Designing a High-Performance Ring Buffer for ECS
 
 When building a thread pool for my ECS, the primary challenge was managing concurrent access to a shared job buffer. Processing jobs sequentially on a single thread creates a performance bottleneck. To improve throughput, I need multiple threads to consume these jobs in parallel.
 
@@ -37,8 +33,8 @@ The three cursors act as both pointers and synchronization primitives. They allo
 
 ### The Producer Flow
 The producer is responsible for pushing jobs into the buffer. Since there is only one producer, it primarily tracks the `Tail` index. 
-* The producer does not need to synchronize with other producers.
-* It must occasionally check the `Steal` index to ensure the buffer is not full.
+* The producer does not need to synchronize with other consumers.
+* It must occasionally check the `Steal` cursor to ensure the buffer is not full.
 * If the buffer is full, the system must handle the overflow based on engine-specific requirements. Currently, the API simply refuses to push new jobs until space is available.
 
 ### The Consumer Flow
@@ -53,3 +49,6 @@ Currently, this design supports one producer and multiple consumers. Future iter
 
 ## References
 - https://en.wikipedia.org/wiki/Circular_buffer
+- https://stackoverflow.com/questions/76994297/where-is-the-ring-buffer-in-linux-kernel-networking
+- https://docs.kernel.org/next/core-api/circular-buffers.html
+- https://github.com/tokio-rs/tokio/blob/master/tokio/src/runtime/scheduler/multi_thread/queue.rs
