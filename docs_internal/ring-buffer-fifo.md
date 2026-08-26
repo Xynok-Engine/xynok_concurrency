@@ -654,7 +654,7 @@ gây ra nó hiếm tới mức chạy thật hàng triệu lần cũng có thể
 | chỉ số đi lùi | không, cả ba chỉ tiến | có (`bottom`, đầu cơ) |
 | ordering | `AcqRel` là đủ | `SeqCst` trên `top` và `pop` |
 | trần sức chứa | `2^31` | `2^30` |
-| hợp với | injector, hàng đợi vào/ra, chỗ cần san tải theo lô | fork-join, `scope`, `parallel_for`, đệ quy chia đôi |
+| hợp với | lane queue, hàng đợi vào/ra, chỗ cần san tải theo lô | fork-join, `scope`, `parallel_for`, đệ quy chia đôi |
 
 Quy tắc ngắn: **hàng đợi cục bộ của worker → LIFO. Chỗ cần san một lô việc sang nơi khác → FIFO.**
 Một pool đầy đủ thường dùng cả hai. Chi tiết bên kia: [`ring_buffer_lifo`](./ring-buffer-lifo.md).

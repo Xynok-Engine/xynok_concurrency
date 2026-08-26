@@ -30,18 +30,18 @@ Tài liệu này chốt hai thứ:
 | crate | vai trò | trạng thái |
 |---|---|---|
 | `xynok_concurrency` | mọi thứ song song sống ở đây | nguyên liệu tầng thấp xong, **chưa có pool** |
-| `xynok_workers` | pool đời trước, 13.6k dòng | chạy được, nhưng một injector bounded dùng chung, không work-stealing |
+| `xynok_workers` | pool đời trước, 13.6k dòng | chạy được, nhưng một hàng đợi bounded dùng chung, không work-stealing |
 | `xynok_ecs` | dữ liệu và system | chunk archetype xong, scheduler chạy tuần tự |
 
 **`xynok_concurrency` đang có**: ring FIFO/LIFO SPMC kèm batch steal (có loom, miri, stress),
-`InlineFn` 64 byte vừa một cache line, `QueueBatching` (injector thô), `Waker` (latch), `Priority`
+`InlineFn` 64 byte vừa một cache line, `QueueBatching` (lane queue thô), `Waker` (latch), `Priority`
 mới có macOS, `pack`/`unpack` trong [`utils/mod.rs`](../src/utils/mod.rs) đúng cái sẽ dùng cho ô
 atomic của sleep protocol. Thiếu đúng tầng giữa: **không có pool nào được export**.
 
 **`xynok_workers` có sẵn thứ đáng mang sang**: `Latch`, `Scope` (`parallel_for`, `par_reduce`,
 `spawn_on`), `PerWorker`, `JobGraph` (`spawn_after`), `Bump` (arena mỗi frame), `OneshotChannel`,
-`profile::Sink`, `Priority` ba nền tảng. Thứ không mang sang là `Injector` bounded: `push` trả
-`Result<(), T>` và đó chính là lỗ hổng mà [docs/injector.md](./injector.md) mô tả.
+`profile::Sink`, `Priority` ba nền tảng. Thứ không mang sang là hàng đợi bounded: `push` trả
+`Result<(), T>` và đó chính là lỗ hổng mà [docs/lane_queue.md](./lane_queue.md) mô tả.
 
 **`xynok_ecs` có sẵn thứ quan trọng nhất**: `AccessScopes::can_parallel_with`
 ([`query/access_scope.rs:124`](../../xynok_ecs/src/query/access_scope.rs)). Câu hỏi khó nhất của
@@ -103,7 +103,7 @@ chạy như một worker. Đây là lý do `N = cores - 1`: main thread là ngư
 bạn mất một core suốt cả frame, và trên máy 4 core đó là 25%.
 
 **Lane B vắt qua ranh giới frame.** `present` không đợi nó. Một asset load xong ở frame N+7 thì kết
-quả đi ngược về lane A qua injector, và job nào đang đợi asset đó được đánh thức bằng job graph chứ
+quả đi ngược về lane A qua lane queue, và job nào đang đợi asset đó được đánh thức bằng job graph
 không bằng polling.
 
 **Audio chạy độc lập với nhịp frame.** Nó không nằm trong barrier nào. Lane A gửi lệnh cho nó (phát
@@ -121,11 +121,11 @@ barrier.
 
 | từ | tới | bằng gì | vì sao |
 |---|---|---|---|
-| main / thread ngoài | pool A | injector của lane | không sở hữu ring nào, xem [injector.md](./injector.md) |
+| main / thread ngoài | pool A | lane queue của lane | không sở hữu ring nào, xem [lane_queue.md](./lane_queue.md) |
 | worker | worker (cùng lane) | ring local, rồi steal | đường nóng, phần lớn job đi lối này |
-| worker | injector cùng lane | `spill_half` khi ring đầy | biến biên cứng của ring thành ngưỡng xả |
-| lane A | lane B | injector của lane B | submit từ ngoài, cùng cơ chế |
-| lane B | lane A | injector của lane A, hoặc `JobHandle` hoàn thành | asset xong thì đánh thức job đang đợi |
+| worker | lane queue cùng lane | `spill_half` khi ring đầy | biến biên cứng của ring thành ngưỡng xả |
+| lane A | lane B | lane queue của lane B | submit từ ngoài, cùng cơ chế |
+| lane B | lane A | lane queue của lane A, hoặc `JobHandle` hoàn thành | asset xong thì đánh thức job đang đợi |
 | lane A | audio | **ring SPSC bounded**, chưa có, phải viết | audio không được lock, không được allocate |
 | lane A | main thread | hàng đợi "chỉ main chạy" | present, window API, một số lời gọi driver bắt buộc đúng thread |
 | job | job cha | `OneshotChannel`, hoặc latch | trả kết quả về điểm join |
@@ -144,10 +144,10 @@ Không có mốc này thì không có gì khác chạy được.
 | bước | việc |
 |---|---|
 | M1.1 | **Xong.** Xóa `src/thread_pool.rs`, đổi `custom_type::Job` sang `InlineFn`, thêm test job chạy qua ring và bị thả cùng ring |
-| M1.2 | **Xong.** [`src/injector.rs`](../src/injector.rs): độ dài đọc được không cần khoá, `steal_batch_and_pop` nạp thẳng vào ring bằng một lần publish, trait `LocalQueue` để dùng chung cho cả hai loại ring. Bản linked list block lock-free để sau, xem [mục 8](#8-ba-quyết-định-đã-chốt) |
+| M1.2 | **Xong.** [`src/lane_queue.rs`](../src/lane_queue.rs): độ dài đọc được không cần khoá, `steal_batch_and_pop` nạp thẳng vào ring bằng một lần publish, trait `LocalQueue` để dùng chung cho cả hai loại ring. Bản linked list block lock-free để sau, xem [mục 8](#8-ba-quyết-định-đã-chốt) |
 | M1.3 | Nối `spill_half` (đã có ở [`ring_buffer_fifo/owner.rs:251`](../src/ring_buffer_fifo/owner.rs), chưa ai gọi). Viết `spill_half` cho `ring_buffer_lifo` |
 | M1.4 | **Sleep protocol**: một ô atomic đóng gói `(num_searching, num_unparked)` bằng `pack`/`unpack` sẵn có, cộng danh sách thread đang park. Trần searcher ở 50% worker |
-| M1.5 | Worker loop: `lifo_slot -> ring -> injector -> steal -> injector -> park`, kèm `tick % 61` ép ngó injector |
+| M1.5 | Worker loop: `lifo_slot -> ring -> lane_queue -> steal -> lane_queue -> park`, kèm `tick % 61` ép ngó lane queue |
 | M1.6 | `ThreadPool`: `new(Config)`, `inject`, `worker_index`, `shutdown` có thứ tự, `threads: 0` chạy inline. Export ở `lib.rs` |
 | M1.7 | Loom cho sleep protocol. Đây là phần dễ sai nhất và là thứ duy nhất bắt được lost wakeup |
 
@@ -186,7 +186,7 @@ fork-join trên dữ liệu stack.
 | bước | việc |
 |---|---|
 | M4.1 | `profile::Sink` port, một zone mỗi job, cắm được Tracy hoặc Superluminal |
-| M4.2 | Counter: steal trúng/trượt, park/unpark, độ sâu injector, thời gian tìm việc. Không có số thì không tune được kích thước ring, số worker, hằng 61 |
+| M4.2 | Counter: steal trúng/trượt, park/unpark, độ sâu lane queue, thời gian tìm việc. Không có số thì không tune được kích thước ring, số worker, hằng 61 |
 | M4.3 | Loom cho scope và job graph. Miri. Stress test **phải có trần cứng** cho mọi vòng gom kết quả |
 | M4.4 | Chế độ `threads: 0` chạy inline, để trả lời câu "bug này có phải do đa luồng không" |
 
@@ -268,10 +268,10 @@ liệu để tune thay vì đoán.
 
 ## 8. Ba quyết định đã chốt
 
-### 8.1. Injector dựng trên `QueueBatching`
+### 8.1. Lane queue dựng trên `QueueBatching`
 
 Nâng cấp thứ đang có, không dựng linked list block lock-free ngay. Lý do thực dụng: mỗi lane một
-injector riêng nên tranh chấp vốn đã thấp, và một cấu trúc mà mình hiểu rõ thì sửa được lúc 2 giờ
+hàng đợi riêng nên tranh chấp vốn đã thấp, và một cấu trúc mà mình hiểu rõ thì sửa được lúc 2 giờ
 sáng.
 
 Bản block lock-free vẫn nằm trong kế hoạch, để sau. Ý tưởng của nó, ghi lại ở đây để lần sau khỏi
@@ -292,10 +292,10 @@ phải đi tìm: hàng đợi là một **danh sách liên kết các block**, m
 block đầy mới cấp block mới và nối vào, tức là một lần allocate cho vài chục job. Phần khó là thu
 hồi block khi vẫn còn thread đang đọc trong đó, và cách crossbeam giải là đếm tham chiếu trên từng
 block: thread cuối cùng rời block là thằng giải phóng nó. Đó cũng chính là phần đáng để hiểu kỹ
-trước khi viết. Mục 7 của [injector.md](./injector.md) nói thêm về nó.
+trước khi viết. Mục 7 của [lane_queue.md](./lane_queue.md) nói thêm về nó.
 
 Cột mốc để quay lại quyết định này: số liệu ở M4.2 cho thấy worker tốn đáng kể thời gian chờ khoá
-injector.
+lane queue.
 
 ### 8.2. Asset IO: thread block thuần trước, chừa chỗ cho async
 

@@ -236,7 +236,7 @@ thêm lần nữa là double free.
 | chỉ số đi lùi | có (`bottom`, đầu cơ) | không, cả ba chỉ tiến |
 | ordering | `SeqCst` trên `top` và `pop` | `AcqRel` là đủ |
 | trần sức chứa | `2^30` | `2^31` |
-| hợp với | fork-join, `scope`, `parallel_for`, đệ quy chia đôi | injector, hàng đợi vào/ra, chỗ cần san tải theo lô |
+| hợp với | fork-join, `scope`, `parallel_for`, đệ quy chia đôi | lane queue, hàng đợi vào/ra, chỗ cần san tải theo lô |
 
 Quy tắc ngắn: **hàng đợi cục bộ của worker → LIFO. Chỗ cần san một lô việc sang nơi khác → FIFO.**
 Một pool đầy đủ thường dùng cả hai.
