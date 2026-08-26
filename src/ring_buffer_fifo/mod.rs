@@ -1,6 +1,3 @@
-//! src: <https://docs.kernel.org/next/core-api/circular-buffers.html>
-//! src: <https://github.com/tokio-rs/tokio/blob/master/tokio/src/runtime/scheduler/multi_thread/queue.rs>
-
 use crate::sync::{AtomicU32, AtomicU64, Ordering};
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::slots::Slots;
