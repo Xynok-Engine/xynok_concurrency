@@ -6,7 +6,13 @@ This repo stores the tools, utilities, and data types that allow Xynok Engine to
 
 - `src/ring_buffer_fifo/`: bounded lock-free work-stealing ring buffer, batch steal — see [docs/ring-buffer-fifo.md](docs/ring-buffer-fifo.md)
 - `src/ring_buffer_lifo/`: bounded Chase-Lev work-stealing deque, LIFO for the owner — see [docs/ring-buffer-lifo.md](docs/ring-buffer-lifo.md)
+- `src/injector.rs`: the lane-wide queue every non-worker pushes into, batch handoff into a local ring
 - `src/utils/`: cache padding, backoff, spin lock, park/unpark waker, inline closures
+
+## Design docs
+
+- [docs/injector.md](docs/injector.md): the shared queue that sits next to the per-worker rings, why it exists, and what still needs wiring up
+- [docs/lanes.md](docs/lanes.md): how the engine's lanes fit together across a frame, and the plan for `xynok_concurrency` and `xynok_ecs` that gets there
 
 ## Examples
 
