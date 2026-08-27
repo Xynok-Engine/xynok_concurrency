@@ -12,9 +12,11 @@ Tài liệu này chốt hai thứ:
 1. **Flow của engine khi nhiều lane cùng chạy**: ai chạy ở đâu, nói chuyện với nhau bằng gì.
 2. **Kế hoạch sửa** `xynok_concurrency` và `xynok_ecs` để flow đó thành hiện thực.
 
-Trạng thái tính tới 27/08/2026: toàn bộ M1 tới M4 của `xynok_concurrency` đã làm xong, kể cả những
-thứ trước đó ghi là "phải viết mới". Việc tiếp theo là **E1** ở [mục 6](#6-kế-hoạch-xynok_ecs), phía
-`xynok_ecs`, và không còn gì chặn nó nữa.
+Trạng thái tính tới 27/08/2026: **M1 tới M4 và E1 tới E3 đều đã làm xong**. `xynok_ecs` giờ chạy
+được nhóm system song song, chia query theo chunk, và có command buffer cho structural change. Cái
+còn lại trong tài liệu này là mấy chỗ cố ý để lại, đều ghi rõ lý do tại chỗ: loom cho scope và job
+graph (M4.3), `sched_setattr` trên Linux (M3.1), và bản lane queue block lock-free
+([mục 8.1](#81-lane-queue-dựng-trên-queuebatching)).
 
 | phần | nội dung |
 |---|---|
@@ -35,7 +37,7 @@ thứ trước đó ghi là "phải viết mới". Việc tiếp theo là **E1**
 |---|---|---|
 | `xynok_concurrency` | mọi thứ song song sống ở đây | **M1 tới M4 xong**, xem [mục 5](#5-kế-hoạch-xynok_concurrency) |
 | `xynok_workers` | pool đời trước, khoảng 7.5k dòng | đóng băng, chỉ còn dùng làm tham chiếu |
-| `xynok_ecs` | dữ liệu và system | chunk archetype xong, scheduler vẫn chạy tuần tự |
+| `xynok_ecs` | dữ liệu và system | chunk archetype xong, **E1 tới E3 xong**: scheduler chạy được nhóm song song |
 
 **`xynok_concurrency` đang có**: ba ring (FIFO/LIFO SPMC kèm batch steal, và SPSC cho audio, đều có
 loom và stress), `InlineFn` 64 byte vừa một cache line, [`LaneQueue`](../src/lane_queue.rs),
@@ -49,10 +51,11 @@ bounded: `push` trả `Result<(), T>` và đó chính là lỗ hổng mà [lane_
 tả.
 
 **`xynok_ecs` có sẵn thứ quan trọng nhất**: `AccessScopes::can_parallel_with`
-([`query/access_scope.rs:124`](../../xynok_ecs/src/query/access_scope.rs)). Câu hỏi khó nhất của
-một ECS scheduler song song đã được trả lời rồi. Chỉ là `DefaultScheduler::run`
-([`schedule/scheduler.rs:80`](../../xynok_ecs/src/schedule/scheduler.rs)) vẫn đang chạy vòng `for`
-tuần tự và chưa ai hỏi tới nó.
+([`query/access_scope.rs`](../../xynok_ecs/src/query/access_scope.rs)). Câu hỏi khó nhất của một
+ECS scheduler song song đã được trả lời từ trước, và giờ `DefaultScheduler`
+([`schedule/scheduler.rs`](../../xynok_ecs/src/schedule/scheduler.rs)) dùng nó thật: session là một
+danh sách bước, mỗi bước là một system đơn hoặc một nhóm song song. `xynok_ecs` phụ thuộc thẳng vào
+`xynok_concurrency` bằng path, xem [mục 6](#6-kế-hoạch-xynok_ecs).
 
 `src/thread_pool.rs` là bản nháp trong `#[cfg(test)]`, đã xóa ở bước đầu tiên.
 
@@ -269,13 +272,24 @@ nằm trong code người dùng, đọc được và diff được.
 
 | bước | việc |
 |---|---|
-| E1.1 | `add_system_parallel(session, (a, b, c))`: một nhóm chạy cùng lúc. `SystemSpecs` kiểm mọi cặp trong nhóm bằng `can_parallel_with`, sai thì panic ngay tại call site, giống cách `add_system` đang bắt system tự alias |
-| E1.2 | Session thành danh sách **bước**: mỗi bước là một system đơn hoặc một nhóm song song. Chạy tuần tự qua các bước, trong một bước thì spawn rồi join |
-| E1.3 | Mỗi job cần `&mut Box<dyn TSystem>`, không `'static`. Giải bằng `HeapMut<SystemTypeStorage>`, đúng thủ thuật đã dùng cho `World`. Scheduler bảo đảm mỗi system vào đúng một job |
-| E1.4 | Main thread tham gia pool trong lúc chờ một bước xong, không park |
+| E1.1 | **Xong.** `add_system_parallel(session, (a, b, c))`, cộng `TIntoSystems` cho tuple tới 16 phần tử. `SystemSpecs::check_group_can_parallel` kiểm mọi cặp bằng `can_parallel_with`, sai thì panic ngay tại call site, giống cách `add_system` đang bắt system tự alias |
+| E1.2 | **Xong.** `ScheduleStep::Single` và `ScheduleStep::Parallel`, session là một `Vec<ScheduleStep>`. Chạy tuần tự qua các bước, trong một bước thì spawn rồi join bằng `pool.scope` |
+| E1.3 | **Xong.** Không cần `HeapMut<SystemTypeStorage>`: `group.iter_mut()` đã cho ra đúng những `&mut` rời nhau mà mỗi job cần, và borrow checker kiểm giúp luôn. `HeapMut` vẫn dùng, nhưng cho `World` |
+| E1.4 | **Xong.** `pool.scope` chờ bằng work-while-waiting, nên thread gọi bốc luôn một trong mấy job vừa spawn |
 
 `TSystem` đã là `Send + Sync + 'static` và `run` nhận `HeapMut<World>`, nên kiểu dữ liệu phía ECS
 gần như không phải đổi. Phần sửa thật nằm gọn trong `DefaultScheduler`.
+
+Một cái bẫy mà chỉ miri chỉ ra được, và nó không nằm trong bảng trên: **khởi tạo một `Query` là ghi
+vào `World`**. Lần đầu gặp một kiểu query, world đăng ký component chưa từng thấy, thêm một
+`QuerySpec`, và dựng lại danh sách archetype của query mỗi khi có archetype mới. `TSystemParam::init`
+làm đúng chuyện đó, mà `init` thì chạy bên trong job. Hai system của một nhóm là hai đường ghi vào
+một registry.
+
+Cách bịt là tách `TSystemParam::prepare` khỏi `TSystemParam::init`: `prepare` giữ toàn bộ phần ghi và
+chạy tuần tự trên thread gọi trước khi spawn, còn `init` chỉ còn tra bảng qua
+`World::query_src_access`, tức là chỉ đọc. Miri gọi tên nó ra ngay cả khi không ai ghi gì thật, vì
+chỉ riêng việc dựng `&mut World` từ hai thread đã là data race rồi.
 
 `JobGraph` của M2.4 vẫn cần, nhưng cho frame graph phía engine (render phụ thuộc culling phụ thuộc
 transform), không phải cho ECS scheduler. Với ECS thì "danh sách bước" là đủ và đơn giản hơn nhiều.
@@ -284,19 +298,33 @@ transform), không phải cho ECS scheduler. Với ECS thì "danh sách bước"
 
 | bước | việc |
 |---|---|
-| E2.1 | `Query` chia theo chunk. Chunk archetype là đơn vị chia tự nhiên, `get_components` đã trả `&[C]` nguyên cột nên mỗi job nhận một lát liền mạch |
-| E2.2 | Ngưỡng chia: dưới ngưỡng thì chạy thẳng, không spawn. Xem [mục 8](#8-ba-quyết-định-đã-chốt) |
-| E2.3 | `par_for_each_chunk` trên `Query`, dựng trên `scope()` của M2.3. Cũng do người dùng gọi tay, cùng tinh thần với E1 |
+| E2.1 | **Xong.** `TQueryParam::ChunkColumns` cho ra `&[C]`, `&mut [C]`, hoặc tuple các lát. `ChunkView` gói chúng lại kèm `&[Entity]` |
+| E2.2 | **Xong.** `batch` đếm bằng chunk, và `parallel_for` tự chạy thẳng khi `batch` lớn hơn tổng số chunk. Xem [mục 8](#8-ba-quyết-định-đã-chốt) |
+| E2.3 | **Xong.** `Query::par_for_each_chunk` và `Query::for_each_chunk`, dựng trên `parallel_for` của M2.3. Cũng do người dùng gọi tay, cùng tinh thần với E1 |
+
+Một điểm đáng ghi lại: **`Entity` không phải một cột component**, nó nằm trong header của chunk. Nên
+`Query<&Entity>` không chạy được, và `ChunkView` là chỗ duy nhất lấy được id entity. Đó cũng là thứ
+mà E3 cần, vì một lệnh `destroy` thì phải biết huỷ ai.
+
+Chỗ nối giữa hai mảng: `ChunkIndex` dựng một bảng prefix sum cho mỗi **archetype**, không phải cho
+mỗi chunk. Một world lớn có hàng vạn chunk nhưng chỉ vài chục archetype, nên bảng ấy bé và dựng lại
+mỗi lần gọi cũng không đáng kể.
 
 ### E3. Structural change
 
-Đây là thứ chặn ECS song song mà chưa ai đụng tới: `cmd_buffer/mod.rs` đang rỗng.
-
 | bước | việc |
 |---|---|
-| E3.1 | Command buffer mỗi worker, dựng trên `PerWorker` của M2.5 |
-| E3.2 | Áp dụng tại điểm đồng bộ cuối bước, một thread, thứ tự xác định |
-| E3.3 | `World::create`, `destroy`, `add_component`, `remove_component` đều nhận `&mut World` nên không gọi được từ job song song. Chúng phải đi qua command buffer. Đây là quy ước cần ghi vào tài liệu người dùng, không phải giới hạn tạm thời |
+| E3.1 | **Xong.** `CommandBuffers` là một `PerWorker<CommandBuffer>` sống trong `World`, vì world là thứ duy nhất một `TSystemParam` với tới được. Param tên `Commands` |
+| E3.2 | **Xong.** `World::apply_commands` đi theo thứ tự ô rồi tới thứ tự ghi trong ô, không theo thứ tự worker nào xong trước. Scheduler gọi nó ở cuối mỗi bước |
+| E3.3 | **Xong.** `Commands` có `create`, `destroy`, `add_component`, `merge_component`, `remove_component`, cộng `push` cho việc tuỳ ý. Ghi trong README và trong `examples/multi_thread_system.rs`. Đây là quy ước lâu dài, không phải giới hạn tạm thời |
+
+Hai chỗ đáng nói:
+
+**`Commands` không góp gì vào access scope.** Nó không chạm kho component nào, nên hai system cùng
+cầm nó vẫn đứng chung một nhóm song song được. Mỗi cái ghi vào ô của worker mình.
+
+**`create` chưa trả về `Entity`.** Lúc ghi lệnh thì entity chưa tồn tại. Muốn có id ngay thì phải đặt
+chỗ trước trong bảng entity, và đó là việc riêng, đáng làm khi có chỗ dùng thật cần nó.
 
 ---
 
@@ -306,24 +334,35 @@ transform), không phải cho ECS scheduler. Với ECS thì "danh sách bước"
 M1  lõi pool  ✓ ────────────────────────────────▶ mọi thứ khác phụ thuộc vào đây
       │
       ├──▶ M2.1  latch                 ✓  ─┐
-      ├──▶ M2.2  work-while-waiting    ✓   ├──▶ E1  scheduler song song  ◀── ở đây
-      └──▶ M2.3  scope, parallel_for   ✓  ─┘        (ECS lần đầu ăn nhiều core)
+      ├──▶ M2.2  work-while-waiting    ✓   ├──▶ E1  scheduler song song  ✓
+      └──▶ M2.3  scope, parallel_for   ✓  ─┘        (ECS đã ăn nhiều core)
                   │
-                  ├──▶ M2.4  job graph ✓ ──▶ frame graph phía engine
-                  ├──▶ M2.5  PerWorker ✓ ──▶ E3  command buffer
+                  ├──▶ M2.4  job graph ✓ ──▶ frame graph phía engine  ◀── ở đây
+                  ├──▶ M2.5  PerWorker ✓ ──▶ E3  command buffer  ✓
                   ├──▶ M2.6  Bump      ✓
-                  └──▶ E2  parallel query
+                  └──▶ E2  parallel query  ✓
                             │
                             └──▶ M3  lane B, audio SPSC, main queue  ✓
                                        │
                                        └──▶ M4  đo đạc, hardening  ✓
 ```
 
-Cả `xynok_concurrency` đã xong, nên việc tiếp theo là **E1** phía `xynok_ecs`, và không còn gì chặn
-nó nữa: `scope`, `Latch`, work-while-waiting và `PerWorker` đều đã có mặt.
+Cả `xynok_concurrency` lẫn E1 tới E3 của `xynok_ecs` đã xong. Mốc đáng ăn mừng là hết **E1**: lần đầu
+ECS chạy trên nhiều core thật, và cũng là lần đầu có số liệu để tune thay vì đoán.
 
-Mốc đáng ăn mừng vẫn là hết **E1**: lần đầu ECS chạy trên nhiều core thật, và cũng là lần đầu có số
-liệu để tune thay vì đoán. Trước đó thì mọi con số trong tài liệu này vẫn là phỏng đoán có lý do.
+Việc tiếp theo là **frame graph phía engine**, dựng trên `JobGraph` của M2.4: render phụ thuộc
+culling phụ thuộc transform. ECS thì không cần nó, vì "danh sách bước" đã đủ, nhưng phía engine thì
+mấy pass có phụ thuộc chéo thật.
+
+Ba chỗ cố ý để lại, xếp theo thứ tự đáng làm trước:
+
+1. **Loom cho scope và job graph** (M4.3). Phải bọc chỗ đăng ký `thread_local` lại sau một lớp thay
+   được thì loom mới không nói dối. Đến giờ chỗ trống ấy được lấp bằng stress test và bằng miri, mà
+   miri thì đã bắt được một lỗi thật ở E1, nên nó không phải là không có giá trị.
+2. **Số đo thật của E1 và E2.** Bảng benchmark ở [mục 8.3](#83-ngưỡng-chia-job) mới đo `parallel_for`
+   trần. Con số cần tiếp theo là "một chunk ECS tốn bao lâu", vì đó là thứ suy ra `batch`.
+3. **Lane queue block lock-free** ([mục 8.1](#81-lane-queue-dựng-trên-queuebatching)) và
+   `sched_setattr` trên Linux (M3.1). Cả hai đều đợi số đo chỉ ra rằng chúng đáng làm.
 
 `xynok_workers` đóng băng từ đây, chỉ còn dùng làm tham chiếu.
 
@@ -444,3 +483,5 @@ Hai điều đi kèm:
 Với ECS thì đơn vị chia là **chunk**, không phải entity: một chunk đã là khối liền mạch trong bộ
 nhớ và số entity mỗi chunk là cố định, nên `batch` đếm bằng chunk và câu hỏi thành "mỗi chunk tốn
 bao lâu".
+
+
