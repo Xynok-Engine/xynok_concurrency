@@ -59,9 +59,33 @@ Set `XYNOK_LANE_THREADS=1` and every job runs inline on the calling thread, whic
 
 ## Design docs
 
-- [docs/lane_queue.md](docs/lane_queue.md): the per-lane queue that sits next to the per-worker rings, and why it exists.
-- [docs/ring_buffer.md](docs/ring_buffer.md): the work-stealing ring buffers underneath.
-- [docs/thread_priority.md](docs/thread_priority.md): how OS scheduling, thread priority, QoS, nice, and EcoQoS protect frame work from background work.
+**Start here:**
+
+- [docs/lanes.md](docs/lanes.md): the lane registry, what runs where, and how work crosses between lanes.
+- [docs/thread_pool.md](docs/thread_pool.md): one lane's work-stealing pool, job routing, and shutdown.
+- [docs/scope.md](docs/scope.md): `scope`, `join`, `parallel_for`, `par_reduce`, and how a job borrows the caller's stack.
+
+**The parts underneath:**
+
+- [docs/latch.md](docs/latch.md): the countdown every join point is built from.
+- [docs/job_graph.md](docs/job_graph.md): `spawn_after(deps)`, a frame as a dependency graph.
+- [docs/sleep_protocol.md](docs/sleep_protocol.md): how a worker sleeps without missing a job.
+- [docs/lane_queue.md](docs/lane_queue.md): the per-lane queue next to the per-worker rings.
+- [docs/ring_buffer.md](docs/ring_buffer.md): the work-stealing rings.
+- [docs/ring_buffer_spsc.md](docs/ring_buffer_spsc.md): one writer, one reader, wait-free, for the audio thread.
+- [docs/inline_fn.md](docs/inline_fn.md): the job type, one cache line instead of one allocation.
+
+**Data and memory:**
+
+- [docs/per_worker.md](docs/per_worker.md): one slot per thread, merged in index order.
+- [docs/bump.md](docs/bump.md): the per-worker scratch arena.
+- [docs/channel.md](docs/channel.md): the one-shot channel a blocking job answers through.
+
+**Tuning and platform:**
+
+- [docs/profiling.md](docs/profiling.md): counters and the profiler sink.
+- [docs/thread_priority.md](docs/thread_priority.md): QoS, nice, and EcoQoS, and how frame work is protected from background work.
+- [docs/utils.md](docs/utils.md): cache padding, backoff, spin locks, slots, and the loom shim.
 
 ## Examples
 
