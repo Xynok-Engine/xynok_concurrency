@@ -20,7 +20,7 @@ These tasks compete for CPU resources, but they do not share the same level of u
 
 ## Managing Thread Priority
 
-To address this, I created `src/apis/priority.rs`. This module provides an enum that allows the engine to communicate its scheduling requirements to the operating system:
+To address this, I created [`src/apis/priority.rs`](../src/apis/priority.rs). This module provides an enum that allows the engine to communicate its scheduling requirements to the operating system:
 
 - **High-priority threads:** These handle frame-critical tasks and require low-latency access to the CPU.
 - **Low-priority threads:** These handle I/O or background tasks, allowing them to yield CPU resources or utilize power-efficient cores instead.
@@ -135,7 +135,7 @@ A thread waiting on a disk read is not burning CPU, but it is still a thread the
 
 That is the reason the Blocking lane exists and why it defaults to `Priority::Io`. The goal is not to finish the read sooner, it is to keep the read out of the way of the frame.
 
-## [`Priority` Data Structure](../src/apis/priority.rs)
+## `Priority` Data Structure
 
 `Priority` helps the OS scheduler determine which threads should take precedence when multiple threads compete for execution time.
 
