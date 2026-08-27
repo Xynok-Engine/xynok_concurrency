@@ -2,10 +2,18 @@
 //!
 //! Đây là cách một job trả kết quả **ra khỏi** pool, và cố ý là một kênh chứ không phải giá trị trả
 //! về của một lời gọi chặn. Lý do nằm ở [`docs_internal/lanes.md`](../docs_internal/lanes.md) mục
-//! 8.2: hôm nay lane IO là thread block thuần, mai nó có thể thành một reactor async, và người gọi
-//! vốn đã không giả định "gọi xong là có kết quả" thì đổi nền phía dưới không đụng gì tới họ.
+//! 8.2: người gọi vốn đã không giả định "gọi xong là có kết quả" thì đổi nền phía dưới không đụng
+//! gì tới họ.
+//!
+//! Chỗ đó giờ đã được thu về: [`Receiver`] là một [`Future`], nên cùng một cái
+//! kênh phục vụ cả ba kiểu chờ. Thread ngoài pool thì [`recv`](Receiver::recv) và ngủ, thread đang
+//! đứng trong một lane thì [`recv_in`](Receiver::recv_in) và chạy job giúp lane, còn một task của
+//! lane async thì `.await` và không giữ thread nào cả.
 
+use std::future::Future;
 use std::mem::MaybeUninit;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::pool::ThreadPool;
 use crate::sync::cell::UnsafeCell;
@@ -22,11 +30,33 @@ struct Inner<T>
     /// Đầu gửi đã biến mất mà chưa gửi gì.
     dropped: AtomicBool,
     value:   UnsafeCell<MaybeUninit<T>>,
-    /// Thread đang chờ, do chính nó ghi vào trước khi ngủ.
+    /// Người đang chờ, do chính họ ghi vào trước khi ngủ hoặc trước khi trả `Pending`.
     ///
     /// Không chụp sẵn lúc tạo kênh: người tạo kênh và người chờ kết quả không nhất thiết là một, ví
     /// dụ một job dựng kênh rồi đưa đầu nhận cho chỗ khác.
-    waiter:  Mutex<Option<Thread>>,
+    waiter:  Mutex<Option<Waiter>>,
+}
+
+/// Ai đang chờ ở đầu nhận, và gọi họ dậy bằng cách nào.
+enum Waiter
+{
+    /// Một thread đã ghi tên rồi `park`.
+    Thread(Thread),
+    /// Một task đã trả `Pending`. Waker của nó lo việc xếp task lại vào lane, nên ở đây không cần
+    /// biết task ấy sống ở lane nào.
+    Task(std::task::Waker),
+}
+
+impl Waiter
+{
+    fn wake(self)
+    {
+        match self
+        {
+            Self::Thread(thread) => thread.unpark(),
+            Self::Task(waker) => waker.wake(),
+        }
+    }
 }
 
 unsafe impl<T: Send> Send for Inner<T> {}
@@ -86,10 +116,9 @@ impl<T> Sender<T>
         self.inner.value.with_mut(|slot| unsafe { (*slot).write(value) });
         self.inner.ready.store(true, Ordering::Release);
 
-        let waiter = ignore_poison(self.inner.waiter.lock()).take();
-        if let Some(thread) = waiter
+        if let Some(waiter) = ignore_poison(self.inner.waiter.lock()).take()
         {
-            thread.unpark();
+            waiter.wake();
         }
     }
 }
@@ -107,10 +136,9 @@ impl<T> Drop for Sender<T>
         // Chuyện này xảy ra thật khi một job panic giữa chừng.
         self.inner.dropped.store(true, Ordering::Release);
 
-        let waiter = ignore_poison(self.inner.waiter.lock()).take();
-        if let Some(thread) = waiter
+        if let Some(waiter) = ignore_poison(self.inner.waiter.lock()).take()
         {
-            thread.unpark();
+            waiter.wake();
         }
     }
 }
@@ -177,7 +205,7 @@ impl<T> Receiver<T>
                 {
                     continue;
                 }
-                *waiter = Some(thread::current());
+                *waiter = Some(Waiter::Thread(thread::current()));
             }
 
             if self.is_ready() || self.is_cancelled()
@@ -205,10 +233,72 @@ impl<T> Receiver<T>
     #[inline]
     unsafe fn take(self) -> T
     {
+        unsafe { self.take_ref() }
+    }
+
+    /// Như [`Self::take`] nhưng không nuốt đầu nhận, vì `poll` chỉ mượn được `&mut Self`.
+    ///
+    /// Lấy xong thì `ready` về `false`, nên lần lấy thứ hai không tồn tại: nó rơi vào nhánh "chưa
+    /// có gì" chứ không đọc lại một ô đã bị move đi.
+    ///
+    /// # Safety
+    ///
+    /// `ready` phải là `true`, và giá trị chưa bị ai lấy.
+    #[inline]
+    unsafe fn take_ref(&self) -> T
+    {
         let value = self.inner.value.with_mut(|slot| unsafe { (*slot).assume_init_read() });
         // Đánh dấu ô đã rỗng, để `Drop` của kênh không thả thêm một lần nữa.
         self.inner.ready.store(false, Ordering::Release);
         value
+    }
+}
+
+/// Chờ kiểu thứ ba: một task async `.await` đầu nhận, và trong lúc chờ nó không giữ thread nào.
+///
+/// Kết quả là `Option<T>` chứ không phải `T`, giống hệt [`Receiver::recv`]: `None` nghĩa là đầu gửi
+/// biến mất mà chưa gửi gì, chuyện xảy ra thật mỗi khi một job hoặc một task panic giữa chừng.
+///
+/// Poll tiếp sau khi đã `Ready` thì nhận `None`, vì giá trị đã bị lấy đi rồi. Đó là hợp đồng bình
+/// thường của `Future`, chỉ là ở đây nó không panic mà trả về một câu trả lời vô hại.
+impl<T> Future for Receiver<T>
+{
+    type Output = Option<T>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output>
+    {
+        if self.is_ready()
+        {
+            // Safety: `ready` là `true` nên ô đã được ghi, và đây là đầu nhận duy nhất.
+            return Poll::Ready(Some(unsafe { self.take_ref() }));
+        }
+        if self.is_cancelled()
+        {
+            return Poll::Ready(None);
+        }
+
+        // Ghi waker rồi kiểm lại, đúng cái vũ điệu của `recv`: nếu người gửi xong ngay trước lúc
+        // mình ghi thì lần kiểm này thấy, còn nếu xong sau thì họ đọc được waker dưới cùng cái khoá
+        // và gọi mình dậy. Không có khe nào ở giữa.
+        {
+            let mut waiter = ignore_poison(self.inner.waiter.lock());
+            if !self.is_ready() && !self.is_cancelled()
+            {
+                *waiter = Some(Waiter::Task(context.waker().clone()));
+            }
+        }
+
+        if self.is_ready()
+        {
+            // Safety: như ở nhánh đầu.
+            return Poll::Ready(Some(unsafe { self.take_ref() }));
+        }
+        if self.is_cancelled()
+        {
+            return Poll::Ready(None);
+        }
+
+        Poll::Pending
     }
 }
 
@@ -245,8 +335,8 @@ impl<T> std::fmt::Debug for Receiver<T>
 #[cfg(all(test, not(loom)))]
 mod test
 {
-    use std::sync::atomic::{AtomicUsize, Ordering as StdOrdering};
     use std::sync::Arc as StdArc;
+    use std::sync::atomic::{AtomicUsize, Ordering as StdOrdering};
 
     use super::*;
     use crate::pool::Config;
@@ -360,6 +450,27 @@ mod test
         }
 
         assert_eq!(tracker.load(StdOrdering::Acquire), 1, "giá trị không ai lấy mà cũng không được thả");
+    }
+
+    #[test]
+    fn await_kenh_da_co_ket_qua_thi_khong_can_ai_goi_day()
+    {
+        let (tx, rx) = oneshot();
+        tx.send(42u32);
+
+        // Kết quả tới trước cả lần poll đầu tiên: `poll` phải trả `Ready` ngay, không ghi waker nào,
+        // vì sẽ không còn ai gọi nó nữa.
+        assert_eq!(crate::task::block_on(rx), Some(42));
+    }
+
+    #[test]
+    fn await_dau_gui_bien_mat_thi_nhan_none()
+    {
+        let pool = pool_with(2);
+        let (tx, rx) = oneshot::<u32>();
+
+        pool.spawn(move || drop(tx));
+        assert_eq!(crate::task::block_on(rx), None);
     }
 
     #[test]

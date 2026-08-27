@@ -4,11 +4,15 @@
 
 This repo stores the tools, utilities, and data types that allow Xynok Engine to handle multi-threading and asynchronous tasks.
 
+In this repo, you'll find various types that resemble synchronization primitives found in rayon, tokio, smol, or crossbeam, though they are often simpler or exhibit different behaviors.
+This is because when I started this project, I had almost zero knowledge of concurrent programming, especially in Rust.
+I learned these concepts and implemented the types myself to sharpen my concurrency skills.
+
 ## What is in here
 
 **The lanes**, which is where you start:
 
-- `src/lanes.rs`: the lane registry. A compute pool for CPU-bound frame work, a small blocking pool for anything that sits in a syscall, and a queue only the main thread drains.
+- `src/lanes.rs`: the lane registry. A compute pool for CPU-bound frame work, a small async pool for anything that spends its time waiting, and a queue only the main thread drains.
 - `src/pool/`: the work-stealing pool itself, one ring per participant, plus the sleep protocol that lets a worker go to sleep without missing a job.
 
 **Building on the pool:**
@@ -18,7 +22,8 @@ This repo stores the tools, utilities, and data types that allow Xynok Engine to
 - `src/latch.rs`: the countdown every join point is built from.
 - `src/per_worker.rs`: one slot per thread, so results are written without sharing and merged in index order.
 - `src/bump.rs`: a per-worker scratch arena where allocating is a pointer bump.
-- `src/channel.rs`: a one-shot channel, for a job that has to hand a value back.
+- `src/task.rs`: the async lane's executor. A future becomes a task, and the task puts itself back in the lane every time it is woken.
+- `src/channel.rs`: a one-shot channel, for a job that has to hand a value back. The receiving end is also a `Future`.
 - `src/profile.rs`, `src/pool/counters.rs`: what the pool itself is doing, since none of it is visible from outside.
 
 **The queues underneath:**
@@ -41,8 +46,14 @@ lanes.compute().parallel_for(10_000, 64, |i| {
     let _ = i * i;
 });
 
-// Something that sits in a syscall goes to its own lane, and answers through a channel
-let loading = lanes.run_blocking(|| std::fs::read("scene.pak").ok());
+// Anything that spends its time waiting goes to the async lane and answers through a channel.
+// The blocking syscall at the bottom of the chain is the only part holding a thread.
+let lanes = std::sync::Arc::new(lanes);
+let loader = std::sync::Arc::clone(&lanes);
+let loading = lanes.spawn_async(async move {
+    let bytes = loader.run_blocking(|| std::fs::read("scene.pak").ok()).await??;
+    Some(bytes.len())
+});
 
 // Waiting runs other jobs rather than idling
 let scene = loading.recv_in(lanes.compute());
@@ -62,6 +73,7 @@ Set `XYNOK_LANE_THREADS=1` and every job runs inline on the calling thread, whic
 **Start here:**
 
 - [docs/lanes.md](docs/lanes.md): the lane registry, what runs where, and how work crosses between lanes.
+- [docs/task.md](docs/task.md): the async lane's executor, and what it does not do yet.
 - [docs/thread_pool.md](docs/thread_pool.md): one lane's work-stealing pool, job routing, and shutdown.
 - [docs/scope.md](docs/scope.md): `scope`, `join`, `parallel_for`, `par_reduce`, and how a job borrows the caller's stack.
 
@@ -79,7 +91,7 @@ Set `XYNOK_LANE_THREADS=1` and every job runs inline on the calling thread, whic
 
 - [docs/per_worker.md](docs/per_worker.md): one slot per thread, merged in index order.
 - [docs/bump.md](docs/bump.md): the per-worker scratch arena.
-- [docs/channel.md](docs/channel.md): the one-shot channel a blocking job answers through.
+- [docs/channel.md](docs/channel.md): the one-shot channel a job answers through, and the future you can await.
 
 **Tuning and platform:**
 

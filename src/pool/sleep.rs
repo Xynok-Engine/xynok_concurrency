@@ -167,16 +167,25 @@ impl Sleep
     }
 
     /// Gọi cả pool dậy. Dùng lúc shutdown, và lúc có thứ mà **mọi** worker phải nhìn lại.
+    ///
+    /// # Vì sao bộ đếm sự kiện vẫn phải nhích khi không có ai đang ngủ
+    ///
+    /// Danh sách rỗng **không** có nghĩa là không có ai sắp ngủ. Một worker vừa kiểm cờ shutdown
+    /// thấy `false` và đang trên đường tới [`Self::park`] thì chưa có tên trong danh sách, nên nó
+    /// không nhận được `unpark` nào; nếu ở đây cũng không nhích bộ đếm thì lát nữa nó so `seen` thấy
+    /// y nguyên, và nó ngủ qua luôn cả lần shutdown. Thread đi join nó thì đợi tới hết đời tiến
+    /// trình.
+    ///
+    /// Nhích bộ đếm thì bịt kín khe đó, vì hai phía cùng RMW một ô `state`: hoặc worker đọc `seen`
+    /// sau lần nhích này, và khi đó lần kiểm cờ shutdown ngay sau đó thấy cờ đã dựng; hoặc nó đọc
+    /// trước, và khi đó `events != seen` nên nó rút tên ra thay vì ngủ. Miri dựng lại đúng cảnh này
+    /// khi nhiều test cùng dựng rồi tắt pool trong một tiến trình.
     pub(crate) fn notify_all(&self)
     {
         let mut sleepers = ignore_poison(self.sleepers.lock());
-        let woken = sleepers.len() as u32;
-        if woken == 0
-        {
-            return;
-        }
+        let woken = sleepers.len() as u64;
 
-        self.state.fetch_add(ONE_EVENT + woken as u64, Ordering::AcqRel);
+        self.state.fetch_add(ONE_EVENT + woken, Ordering::AcqRel);
         for (index, thread) in sleepers.drain(..)
         {
             self.parkers[index].store(NOTIFIED, Ordering::Release);

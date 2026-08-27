@@ -16,7 +16,7 @@ None of these are interesting on their own, which is the point. Each exists beca
 
 **Backoff** is the standard escalation for a thread waiting on something short: spin with a doubling number of hints, then start yielding, then report that yielding has stopped helping, which is the caller's cue to park instead. Under loom and miri the limits collapse to almost nothing, because under loom every spin is another branch in the model and under miri every spin is dozens of interpreted instructions. The spin hint is only a performance hint, so removing it changes nothing about correctness.
 
-**The spin lock** is a mutex that never sleeps, an atomic flag plus a backoff. It is right when the critical section is a handful of instructions and the wait would be shorter than a syscall pair. It is wrong when the holder can be preempted while holding it, which is worth remembering around the low priority blocking lane.
+**The spin lock** is a mutex that never sleeps, an atomic flag plus a backoff. It is right when the critical section is a handful of instructions and the wait would be shorter than a syscall pair. It is wrong when the holder can be preempted while holding it, which is worth remembering around the low priority async lane.
 
 **The batching queue** is a plain queue behind that same spin lock, with batch entry points, and it is what the [lane queue](lane_queue.md) is built from. Batching is the whole reason it is a separate type: a lock touched once per job would not survive the traffic, while a lock touched once per few dozen jobs spreads its cost thin enough to disappear.
 

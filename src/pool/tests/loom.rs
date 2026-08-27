@@ -208,9 +208,13 @@ fn job_toi_giua_luc_worker_dang_di_ngu()
     });
 }
 
-/// `notify_all` phải gọi dậy mọi người đang ngủ, kể cả người vừa mới ghi tên vào danh sách.
+/// `notify_all` phải gọi được mọi người đang ngủ ra khỏi `park`, kể cả người vừa mới ghi tên vào
+/// danh sách.
 ///
-/// Đây là đường mà shutdown đi: worker nào ngủ quên ở đây thì `join` của nó không bao giờ về.
+/// Đây là đường mà shutdown đi: worker nào ngủ quên ở đây thì `join` của nó không bao giờ về. Ra
+/// bằng đường nào thì không quan trọng, và cả hai đường đều hợp lệ: `Notified` là bị bốc khỏi danh
+/// sách rồi `unpark`, còn `Cancelled` là thấy bộ đếm sự kiện đã nhích nên tự rút tên ra trước khi
+/// kịp ngủ. Cái sau còn rẻ hơn, vì không tốn một lần park rồi dậy ngay.
 #[test]
 fn notify_all_khong_bo_sot_ai()
 {
@@ -222,8 +226,7 @@ fn notify_all_khong_bo_sot_ai()
         let worker_woken = Arc::clone(&woken);
         let handle = thread::spawn(move || {
             let seen = worker_sleep.events();
-            let wake = worker_sleep.park(0, false, seen, || false);
-            assert_eq!(wake, Wake::Notified);
+            worker_sleep.park(0, false, seen, || false);
             worker_woken.fetch_add(1, Ordering::AcqRel);
         });
 

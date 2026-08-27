@@ -37,7 +37,7 @@ The **scheduler** decides which thread runs right now, which ones keep waiting, 
 
 Internally there are only two levels: `Frame` becomes interactive, while `Background` and `Io` both become low. They behave identically today and stay separate because they describe different situations, one being work off the frame path and the other work waiting on a device, so a future backend can treat them differently without anyone revisiting a call site.
 
-A thread waiting on a disk read burns no CPU, but it is still a thread the scheduler has to place, and on a mixed-core machine it may land on a fast one. Telling the OS the work is not urgent lets it park the thread somewhere cheap, and since the wait is dominated by the device rather than by instructions, the slower core costs almost nothing and saves noticeable power. That is why the blocking lane defaults to `Io`: not to finish the read sooner, but to keep it out of the frame's way.
+A thread waiting on a disk read burns no CPU, but it is still a thread the scheduler has to place, and on a mixed-core machine it may land on a fast one. Telling the OS the work is not urgent lets it park the thread somewhere cheap, and since the wait is dominated by the device rather than by instructions, the slower core costs almost nothing and saves noticeable power. That is why the async lane defaults to `Io`: not to finish the read sooner, but to keep it out of the frame's way.
 
 > This is thread priority, not per-job priority. Once a worker picks up a job, everything it runs inherits that worker's scheduling characteristics. Work that needs different treatment has to go to a different lane.
 
@@ -55,14 +55,14 @@ Two behaviours are worth knowing before reading too much into a profile. On Linu
 
 ### From lanes to the scheduler
 * Each lane configures itself from its own default priority, and every worker in that pool carries the same policy whatever jobs it happens to pick up.
-* Compute workers ask for the interactive class, so the scheduler tends to keep them on performance cores and away from aggressive throttling. Blocking workers ask for the low class, so it is free to park them on efficiency cores, which suits work that spends its time in syscalls.
+* Compute workers ask for the interactive class, so the scheduler tends to keep them on performance cores and away from aggressive throttling. Async lane workers ask for the low class, so it is free to park them on efficiency cores, which suits work that spends its time waiting.
 * Neither of those is pinning. The engine never calls an affinity API, and the OS stays free to move any thread anywhere at any time.
 
 ### Limitations worth knowing
 * **Rejections are not errors.** Native calls can fail from missing permissions or an older OS, and the module ignores that. Priority is best effort, the call returns nothing, and failing to set it is not a reason to refuse to launch.
 * **The host thread is untouched.** The pool lets the thread that created it run jobs too, but the priority call only happens inside spawned workers, so the main thread keeps whatever the application or OS gave it. With zero workers configured, nothing calls the module at all.
-* **Priority cannot fix a job in the wrong lane.** A heavy CPU bound job on the blocking lane still runs at low priority, and a synchronous file read on the compute lane still blocks a compute worker. Put frame-deadline CPU work on compute, syscall-bound or non-urgent work on blocking, main-thread-only work on main, and real-time callbacks such as audio on a dedicated thread of their own.
-* **More threads is not more cores.** Oversubscribing just adds contention, cache thrashing and context switches. That is why compute spawns one worker per core minus one, with the calling thread making up the difference, while blocking stays at two to four regardless of machine size: that count is chosen for how many parallel reads a disk handles well, not for how many cores you have.
+* **Priority cannot fix a job in the wrong lane.** A heavy CPU bound job on the async lane still runs at low priority, and a synchronous file read on the compute lane still blocks a compute worker. Put frame-deadline CPU work on compute, syscall-bound or non-urgent work on the async lane, main-thread-only work on main, and real-time callbacks such as audio on a dedicated thread of their own.
+* **More threads is not more cores.** Oversubscribing just adds contention, cache thrashing and context switches. That is why compute spawns one worker per core minus one, with the calling thread making up the difference, while the async lane stays at two to four regardless of machine size: that count is chosen for how many parallel reads a disk handles well, not for how many cores you have.
 
 ## References
 - https://www.geeksforgeeks.org/operating-systems/process-schedulers-in-operating-system/

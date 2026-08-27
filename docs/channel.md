@@ -10,7 +10,9 @@ tags:
 
 This is how a job returns a result out of the pool, and it is deliberately a channel rather than the return value of a blocking call.
 
-Today the I/O lane is plain blocking threads. Tomorrow it could be an async reactor. A caller holding a receiver rather than a value has never assumed "the call returned, so the result is here", so swapping what runs underneath touches nothing at the call site. Sending work to the blocking lane is built entirely out of this.
+A caller holding a receiver rather than a value has never assumed "the call returned, so the result is here", so swapping what runs underneath touches nothing at the call site. Everything the [async lane](lanes.md) hands back is built out of this.
+
+That promise has already been cashed in once. The receiver is a `Future`, so the same channel serves all three ways of waiting: park, run pool jobs, or await it from a [task](task.md) and hold no thread at all.
 
 Sending consumes the sending end, so there is exactly one send, and receiving happens once as well.
 
@@ -21,7 +23,7 @@ Both ends share four fields:
 * **A ready flag**, released when the value is written and acquired when it is read, so seeing it set means seeing the contents too.
 * **A dropped flag**, saying the sender left without sending anything.
 * **The value slot**, uninitialised until the moment of the send.
-* **A waiter handle**, written by the waiting thread itself just before it sleeps.
+* **A waiter**, written by whoever is waiting, just before they sleep or return `Pending`. It is either a thread handle to unpark or a waker to call, and the sending side does not care which.
 
 The waiter is not captured when the channel is created, because the thread that creates a channel and the thread that waits on the result are not necessarily the same. A job can build a channel and hand the receiving end somewhere else entirely.
 
@@ -40,6 +42,11 @@ The waiter is not captured when the channel is created, because the thread that 
 * **Inside a pool**, waiting runs other pool jobs until the value arrives. The thread is still a participant, so idling wastes a core, and with nested joins the waiting thread might be the one that has to run the job it is waiting for.
 * **Outside any pool**, waiting parks.
 * **Polling** takes the value if it is there and hands the receiver back if it is not, so a caller that checks and moves on does not lose the channel.
+
+### Awaiting
+* Polling checks for a value, writes the waker down under the same lock a sleeping thread would use, then checks again. It is the parking dance below with a waker in place of a thread handle.
+* The output is `Option<T>`, the same as a blocking receive: `None` means the sender left without sending, which happens for real whenever a job or a task panics halfway.
+* Polling again after `Ready` gives `None`, since the value has already been taken. That is the ordinary `Future` contract; here it answers harmlessly instead of panicking.
 
 ### The parking dance
 1. Check whether the value or the cancellation has already landed.

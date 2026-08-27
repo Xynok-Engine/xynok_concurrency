@@ -10,7 +10,7 @@
 //! | lane | chạy cái gì | thread | vì sao tách |
 //! |---|---|---|---|
 //! | [`LaneId::Compute`] | frame logic, ECS, physics, culling, animation, ghi command buffer | một pool work-stealing, `N = cores - 1`, thread gọi tham gia thành người thứ N | CPU-bound, không bao giờ block, muốn cache nóng và muốn ăn hết core |
-//! | [`LaneId::Blocking`] | đọc file, decode texture, compile shader, giải nén | pool riêng 2 tới 4 thread, priority thấp | thời gian nằm trong syscall, và một thread block không được phép chiếm core của lane compute |
+//! | [`LaneId::Async`] | nạp asset, decode texture, compile shader, giải nén | pool riêng 2 tới 4 thread, priority thấp, chạy **task** chứ không chỉ closure | việc ở đây là chuỗi chờ nối nhau, và một cái chờ không được phép chiếm core của lane compute |
 //! | [`LaneId::Main`] | present, gọi API cửa sổ, vài lời gọi driver | không thread nào cả: một hàng đợi mà chính main thread vét | ràng buộc cứng, phải đúng thread đó |
 //!
 //! Physics, rendering và compute **không** phải ba lane riêng. Chúng là ba nhóm job trong lane
@@ -18,8 +18,37 @@
 //! physics một pool riêng nghĩa là trong lúc physics chạy thì các core dành cho render ngồi không,
 //! và ngược lại.
 //!
+//! Lane async là lane duy nhất chạy future. Một task poll ra `Pending` thì trả thread lại cho lane
+//! ngay tại đó, nên "đợi" ở lane này không tốn thread nào, và cả chuỗi nạp một asset viết được thành
+//! một hàm async liền mạch:
+//!
+//! ```
+//! use std::sync::Arc;
+//!
+//! use xynok_concurrency::lanes::{Lanes, LanesConfig};
+//!
+//! let lanes = Arc::new(Lanes::new(LanesConfig::default()));
+//!
+//! let inner = Arc::clone(&lanes);
+//! let loaded = lanes.spawn_async(async move {
+//!     let bytes = inner
+//!         .run_blocking(|| std::fs::read("scene.pak").unwrap_or_default())
+//!         .await?;
+//!     Some(bytes.len())
+//! });
+//!
+//! assert_eq!(loaded.recv_in(lanes.compute()), Some(Some(0)));
+//! ```
+//!
+//! Việc chặn thật, tức là cái syscall ở đáy chuỗi ấy, đi qua [`Lanes::run_blocking`]: nó chiếm một
+//! thread của lane trong lúc chạy, còn task gọi nó thì `.await` và không chiếm gì. Xem
+//! [`task`] để biết một task đi đường nào, và cả chỗ nói thẳng là bên dưới vẫn chưa có
+//! reactor nào.
+//!
 //! Thread audio thì không nằm trong bảng này, và đó là chuyện có chủ ý: nó không bao giờ là worker
 //! của pool nào. Nó nhận lệnh qua [`ring_buffer_spsc`](crate::ring_buffer_spsc) và chỉ đọc.
+
+use std::future::Future;
 
 use crate::apis::priority::Priority;
 use crate::channel::{Receiver, oneshot};
@@ -27,6 +56,7 @@ use crate::custom_type::Job;
 use crate::lane_queue::LaneQueue;
 use crate::pool::{Config, ThreadPool};
 use crate::sync::thread::{self, ThreadId};
+use crate::task;
 use crate::utils::available_cores;
 
 /// Lane nào chạy job này.
@@ -36,8 +66,8 @@ pub enum LaneId
     /// Việc CPU-bound của frame. Mặc định, và là chỗ phần lớn job sống.
     #[default]
     Compute,
-    /// Việc mà phần lớn thời gian nằm trong syscall.
-    Blocking,
+    /// Việc mà phần lớn thời gian là chờ: nạp asset, decode, compile shader. Lane này chạy future.
+    Async,
     /// Việc buộc phải chạy trên main thread.
     Main,
 }
@@ -46,33 +76,34 @@ pub enum LaneId
 #[derive(Debug, Clone)]
 pub struct LanesConfig
 {
-    pub compute:  Config,
-    pub blocking: Config,
+    pub compute:    Config,
+    pub async_lane: Config,
 }
 
 impl Default for LanesConfig
 {
-    /// Lane compute ăn gần hết core, lane blocking chỉ vài thread và priority thấp.
+    /// Lane compute ăn gần hết core, lane async chỉ vài thread và priority thấp.
     ///
-    /// Lane blocking cố ý **không** co giãn theo số core: nó không tồn tại để chạy nhanh mà để giữ
-    /// cho thread đang nằm trong syscall khỏi chiếm core của frame. Hai tới bốn thread là đủ cho
-    /// vài file lớn đọc song song, và nhiều hơn thế chỉ tổ làm ổ đĩa phải nhảy đầu đọc.
+    /// Lane async cố ý **không** co giãn theo số core: nó không tồn tại để chạy nhanh mà để giữ cho
+    /// việc chờ khỏi chiếm core của frame. Số thread ở đây là số syscall chặn chạy song song được,
+    /// chứ không phải số task: task đang `.await` thì không nằm trên thread nào. Hai tới bốn là đủ
+    /// cho vài file lớn đọc cùng lúc, và nhiều hơn thế chỉ tổ làm ổ đĩa phải nhảy đầu đọc.
     fn default() -> Self
     {
         Self {
-            compute:  Config {
+            compute:    Config {
                 thread_name: "xynok-compute".to_string(),
                 priority: Priority::Frame,
                 ..Config::default()
             },
-            blocking: Config {
+            async_lane: Config {
                 threads:       available_cores().clamp(2, 4),
                 ring_capacity: 64,
                 scratch_bytes: 0,
-                thread_name:   "xynok-blocking".to_string(),
+                thread_name:   "xynok-async".to_string(),
                 priority:      Priority::Io,
-                // Thread ở đây phần lớn thời gian nằm trong syscall, nên quay tại chỗ chờ việc là
-                // đốt core của lane compute. Ngủ sớm.
+                // Thread ở đây phần lớn thời gian là chờ, nên quay tại chỗ chờ việc là đốt core của
+                // lane compute. Ngủ sớm.
                 spin_rounds:   1,
             },
         }
@@ -81,7 +112,7 @@ impl Default for LanesConfig
 
 impl LanesConfig
 {
-    /// [`Self::default`], với `XYNOK_LANE_THREADS` và `XYNOK_BLOCKING_THREADS` đè lên số thread.
+    /// [`Self::default`], với `XYNOK_LANE_THREADS` và `XYNOK_ASYNC_THREADS` đè lên số thread.
     ///
     /// Đọc từ env để tune được mà không phải build lại: đổi số thread rồi chạy lại game là một vòng
     /// lặp vài giây, còn build lại engine thì không.
@@ -90,10 +121,10 @@ impl LanesConfig
         let mut config = Self::default();
         config.compute.threads = Config::from_env().threads;
 
-        if let Ok(raw) = std::env::var("XYNOK_BLOCKING_THREADS")
+        if let Ok(raw) = std::env::var("XYNOK_ASYNC_THREADS")
             && let Ok(threads) = raw.trim().parse::<usize>()
         {
-            config.blocking.threads = threads;
+            config.async_lane.threads = threads;
         }
 
         config
@@ -114,27 +145,27 @@ struct MainQueue
 /// Cả bộ lane, dựng một lần lúc khởi động.
 pub struct Lanes
 {
-    compute:  ThreadPool,
-    blocking: ThreadPool,
-    main:     MainQueue,
+    compute:    ThreadPool,
+    async_lane: ThreadPool,
+    main:       MainQueue,
 }
 
 impl Lanes
 {
     /// Dựng cả hai pool. Thread gọi hàm này được coi là main thread.
     ///
-    /// Lane blocking dựng trước, lane compute dựng sau, và thứ tự đó có lý do: mỗi thread chỉ nhớ
-    /// được chỗ đứng ở **một** pool, nên pool dựng sau là pool mà thread này có ring riêng. Main
-    /// thread thì làm việc với lane compute suốt cả frame, còn lane blocking thì nó chỉ gửi việc
-    /// sang chứ không tham gia chạy.
+    /// Lane async dựng trước, lane compute dựng sau, và thứ tự đó có lý do: mỗi thread chỉ nhớ được
+    /// chỗ đứng ở **một** pool, nên pool dựng sau là pool mà thread này có ring riêng. Main thread
+    /// thì làm việc với lane compute suốt cả frame, còn lane async thì nó chỉ gửi việc sang chứ
+    /// không tham gia chạy.
     pub fn new(config: LanesConfig) -> Self
     {
-        let blocking = ThreadPool::new(config.blocking);
+        let async_lane = ThreadPool::new(config.async_lane);
 
         Self {
-            compute:  ThreadPool::new(config.compute),
-            blocking: blocking,
-            main:     MainQueue {
+            compute:    ThreadPool::new(config.compute),
+            async_lane: async_lane,
+            main:       MainQueue {
                 jobs:   LaneQueue::new(),
                 thread: thread::current().id(),
             },
@@ -154,14 +185,14 @@ impl Lanes
         &self.compute
     }
 
-    /// Pool của lane blocking.
+    /// Pool của lane async.
     ///
     /// Đừng gửi việc CPU-bound sang đây: thread ở lane này chạy với priority thấp, nên một job tính
     /// toán nặng đặt nhầm chỗ sẽ chạy chậm hơn hẳn mà không có lý do nào nhìn thấy được từ code.
     #[inline]
-    pub fn blocking(&self) -> &ThreadPool
+    pub fn async_lane(&self) -> &ThreadPool
     {
-        &self.blocking
+        &self.async_lane
     }
 
     /// Giao một job cho lane được chỉ định.
@@ -171,7 +202,7 @@ impl Lanes
         match lane
         {
             LaneId::Compute => self.compute.spawn(f),
-            LaneId::Blocking => self.blocking.spawn(f),
+            LaneId::Async => self.async_lane.spawn(f),
             LaneId::Main => self.spawn_on_main(f),
         }
     }
@@ -224,32 +255,92 @@ impl Lanes
         count
     }
 
-    /// Gửi một việc chặn sang lane blocking và trả về đầu nhận kết quả.
+    /// Giao một future cho lane async và trả về đầu nhận kết quả.
     ///
-    /// Đây là hình dạng mà mọi thứ IO nên đi qua: người gọi cầm một [`Receiver`] chứ không phải một
-    /// giá trị, nên họ vốn đã không giả định "gọi xong là có kết quả". Ngày lane blocking đổi thành
-    /// một reactor async, chỗ này không phải sửa dòng nào.
+    /// Đây là cửa chính của lane async. Task chạy độc lập với vòng lặp frame: nó bắt đầu ngay, và
+    /// mỗi lần nó `.await` một thứ chưa xong thì nó trả thread lại cho lane chứ không giữ.
+    ///
+    /// Kết quả trả về là một [`Receiver`], nên chờ nó kiểu nào là tuỳ chỗ bạn đang đứng: `.await`
+    /// từ một task khác, [`recv_in`](Receiver::recv_in) từ một thread của lane compute, hoặc
+    /// [`try_recv`](Receiver::try_recv) mỗi frame một lần cho tới khi có. Task panic giữa chừng thì
+    /// người chờ nhận `None`, không phải một lần treo.
     ///
     /// ```
     /// use xynok_concurrency::lanes::{Lanes, LanesConfig};
     ///
     /// let lanes = Lanes::new(LanesConfig::default());
-    /// let reading = lanes.run_blocking(|| "nội dung file".to_string());
+    ///
+    /// let loading = lanes.spawn_async(async { "nội dung file".to_string() });
     ///
     /// // Trong lúc chờ, thread này vẫn chạy job của lane compute.
     /// assert_eq!(
-    ///     reading.recv_in(lanes.compute()).as_deref(),
+    ///     loading.recv_in(lanes.compute()).as_deref(),
     ///     Some("nội dung file")
     /// );
     /// ```
+    pub fn spawn_async<F>(&self, future: F) -> Receiver<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        task::spawn(&self.async_lane, future)
+    }
+
+    /// Gửi một việc **chặn thật** sang lane async và trả về đầu nhận kết quả.
+    ///
+    /// Đây là đáy của mọi chuỗi async: một `File::read`, một lệnh decode của thư viện bên thứ ba,
+    /// bất cứ thứ gì chỉ có API đồng bộ. Nó chiếm một thread của lane trong suốt thời gian chạy, và
+    /// đó chính là việc lane này sinh ra để hứng.
+    ///
+    /// Kết quả là một [`Receiver`], nên trong một task nó là `.await`:
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use xynok_concurrency::lanes::{Lanes, LanesConfig};
+    ///
+    /// let lanes = Arc::new(Lanes::new(LanesConfig::default()));
+    ///
+    /// let inner = Arc::clone(&lanes);
+    /// let loaded = lanes.spawn_async(async move {
+    ///     let text = inner.run_blocking(|| "nội dung file".to_string()).await?;
+    ///     Some(text.len())
+    /// });
+    ///
+    /// assert_eq!(loaded.recv_in(lanes.compute()), Some(Some(15)));
+    /// ```
+    ///
+    /// # Đừng gửi việc CPU-bound qua đây
+    ///
+    /// Lane chỉ có hai tới bốn thread, nên một closure tính toán nặng vừa chạy chậm (priority thấp)
+    /// vừa chặn mất một phần lane, và mọi task đang chờ được poll phải xếp hàng sau nó. Việc
+    /// CPU-bound thuộc về lane compute.
     pub fn run_blocking<F, R>(&self, f: F) -> Receiver<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
         let (tx, rx) = oneshot();
-        self.blocking.spawn(move || tx.send(f()));
+        self.async_lane.spawn(move || tx.send(f()));
         rx
+    }
+
+    /// Chạy một future ngay trên thread gọi, và chạy job của lane compute trong lúc chờ.
+    ///
+    /// Dành cho main thread ở một điểm đồng bộ, ví dụ lúc khởi động khi cần đủ asset rồi mới vào
+    /// vòng lặp frame. Trong frame thì thường không phải cái bạn muốn: chờ ở đây là chờ thật, còn
+    /// đường bình thường là [`Self::spawn_async`] rồi ngó kết quả ở frame sau.
+    ///
+    /// ```
+    /// use xynok_concurrency::lanes::{Lanes, LanesConfig};
+    ///
+    /// let lanes = Lanes::new(LanesConfig::default());
+    /// let loaded = lanes.block_on(async { 6 * 7 });
+    /// assert_eq!(loaded, 42);
+    /// ```
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output
+    {
+        task::block_on_in(&self.compute, future)
     }
 
     /// Dọn ranh giới frame: reset mọi arena nháp của lane compute.
@@ -267,7 +358,7 @@ impl Lanes
     pub fn shutdown(&self)
     {
         self.compute.shutdown();
-        self.blocking.shutdown();
+        self.async_lane.shutdown();
 
         if thread::current().id() == self.main.thread
         {
@@ -282,7 +373,7 @@ impl std::fmt::Debug for Lanes
     {
         f.debug_struct("Lanes")
             .field("compute", &self.compute)
-            .field("blocking", &self.blocking)
+            .field("async_lane", &self.async_lane)
             .field("pending_on_main", &self.pending_on_main())
             .finish()
     }
@@ -299,8 +390,9 @@ impl std::fmt::Debug for Lanes
 /// Đây **không** phải `block_in_place` của tokio: thread này vẫn giữ chỗ của nó trong pool, không
 /// có worker thay thế nào được spawn ra. Nếu mọi worker cùng gọi hàm này một lúc thì pool đứng
 /// im cho tới khi có ai đó xong. Nó đủ cho trường hợp thật hay gặp, tức là một job lẻ phải chờ một
-/// thứ ngắn, và không đủ để thay cho việc gửi hẳn công việc sang [`LaneId::Blocking`]. Chờ lâu thì
-/// dùng [`Lanes::run_blocking`].
+/// thứ ngắn, và không đủ để thay cho việc gửi hẳn công việc sang [`LaneId::Async`]. Chờ lâu thì
+/// dùng [`Lanes::run_blocking`], còn nếu chỗ gọi viết được thành async thì [`Lanes::spawn_async`]
+/// mới là đường đúng: ở đó chờ không tốn thread nào.
 pub fn block_in_place<F, R>(pool: &ThreadPool, f: F) -> R
 where F: FnOnce() -> R
 {
@@ -315,17 +407,18 @@ mod test
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::channel::oneshot;
 
     fn small_lanes() -> Lanes
     {
         Lanes::new(LanesConfig {
-            compute:  Config {
+            compute:    Config {
                 threads: 2,
                 ..Config::default()
             },
-            blocking: Config {
+            async_lane: Config {
                 threads: 2,
-                ..LanesConfig::default().blocking
+                ..LanesConfig::default().async_lane
             },
         })
     }
@@ -335,7 +428,7 @@ mod test
     {
         let lanes = small_lanes();
         let compute_done = Arc::new(AtomicUsize::new(0));
-        let blocking_done = Arc::new(AtomicUsize::new(0));
+        let async_done = Arc::new(AtomicUsize::new(0));
 
         for _ in 0..100
         {
@@ -344,17 +437,17 @@ mod test
                 done.fetch_add(1, Ordering::Relaxed);
             });
 
-            let done = Arc::clone(&blocking_done);
-            lanes.spawn(LaneId::Blocking, move || {
+            let done = Arc::clone(&async_done);
+            lanes.spawn(LaneId::Async, move || {
                 done.fetch_add(1, Ordering::Relaxed);
             });
         }
 
         lanes.compute().run_until(|| compute_done.load(Ordering::Acquire) == 100);
-        lanes.blocking().run_until(|| blocking_done.load(Ordering::Acquire) == 100);
+        lanes.async_lane().run_until(|| async_done.load(Ordering::Acquire) == 100);
 
         assert_eq!(compute_done.load(Ordering::Acquire), 100);
-        assert_eq!(blocking_done.load(Ordering::Acquire), 100);
+        assert_eq!(async_done.load(Ordering::Acquire), 100);
     }
 
     #[test]
@@ -480,6 +573,105 @@ mod test
 
         assert_eq!(reading.recv_in(lanes.compute()).as_deref(), Some("nội dung file"));
         lanes.compute().run_until(|| done.load(Ordering::Acquire) == 100);
+    }
+
+    #[test]
+    fn task_cua_lane_async_await_duoc_viec_chan()
+    {
+        let lanes = Arc::new(small_lanes());
+
+        let inner = Arc::clone(&lanes);
+        let loaded = lanes.spawn_async(async move {
+            let text = inner
+                .run_blocking(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    "nội dung file".to_string()
+                })
+                .await?;
+            Some(text.len())
+        });
+
+        assert_eq!(loaded.recv_in(lanes.compute()), Some(Some(15)));
+    }
+
+    #[test]
+    fn task_dang_await_khong_giu_thread_nao_cua_lane()
+    {
+        // Lane hai thread, ba task cùng chờ. Nếu "chờ" mà chiếm thread thì lane đã tắc, và mấy job
+        // bên dưới sẽ không bao giờ chạy hết.
+        let lanes = small_lanes();
+        let mut senders = Vec::new();
+        let mut tasks = Vec::new();
+
+        for i in 0..3
+        {
+            let (tx, rx) = oneshot::<usize>();
+            senders.push(tx);
+            tasks.push(lanes.spawn_async(async move { rx.await.map(|value| value + i) }));
+        }
+
+        let done = Arc::new(AtomicUsize::new(0));
+        for _ in 0..200
+        {
+            let done = Arc::clone(&done);
+            lanes.spawn(LaneId::Async, move || {
+                done.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+        lanes.async_lane().run_until(|| done.load(Ordering::Acquire) == 200);
+        assert_eq!(done.load(Ordering::Acquire), 200);
+
+        for (i, tx) in senders.into_iter().enumerate()
+        {
+            tx.send(i * 10);
+        }
+        for (i, task) in tasks.into_iter().enumerate()
+        {
+            assert_eq!(task.recv_in(lanes.compute()), Some(Some(i * 10 + i)));
+        }
+    }
+
+    #[test]
+    fn block_on_chay_job_lane_compute_trong_luc_cho()
+    {
+        let lanes = Arc::new(small_lanes());
+
+        let done = Arc::new(AtomicUsize::new(0));
+        for _ in 0..200
+        {
+            let done = Arc::clone(&done);
+            lanes.compute().spawn(move || {
+                done.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+
+        let inner = Arc::clone(&lanes);
+        let value = lanes.block_on(async move {
+            inner
+                .run_blocking(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    7u32
+                })
+                .await
+        });
+
+        assert_eq!(value, Some(7));
+        lanes.compute().run_until(|| done.load(Ordering::Acquire) == 200);
+        assert_eq!(done.load(Ordering::Acquire), 200);
+    }
+
+    #[test]
+    fn task_panic_thi_nguoi_cho_nhan_none()
+    {
+        let lanes = small_lanes();
+        let loaded = lanes.spawn_async(async {
+            panic!("asset này hỏng");
+        });
+        assert_eq!(loaded.recv_in(lanes.compute()), None::<()>);
+
+        // Lane vẫn nhận việc mới sau đó.
+        let after = lanes.spawn_async(async { 7u32 });
+        assert_eq!(after.recv_in(lanes.compute()), Some(7));
     }
 
     #[test]

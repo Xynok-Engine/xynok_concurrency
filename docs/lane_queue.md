@@ -33,7 +33,7 @@ A pool lane is built from four pieces:
 ### Three ways in
 * **From outside.** Any thread that is not a worker of this lane pushes into the lane queue, one job at a time.
 * **From a worker whose ring filled up.** It pulls the older half out of its ring and drops the whole batch into the queue, which guarantees room for the job it was trying to push. The ring's hard limit stops being a failure and becomes a spill threshold.
-* **From another lane.** A blocking job that finished decoding a texture and wants the GPU upload done on the compute lane owns no ring over there, so it goes through that lane's queue, the same path as submitting from outside.
+* **From another lane.** An async task that finished decoding a texture and wants the GPU upload done on the compute lane owns no ring over there, so it goes through that lane's queue, the same path as submitting from outside. A task being woken takes that same path back into its own lane.
 
 ### One way out, in batches
 The lane queue is the one place every thread in the lane meets, so taking a single job per visit makes every job pay for a round of contention. Taking a cluster shares that cost: one visit, then the rest of the jobs run out of the ring without touching anyone. A worker keeps one job to run now and loads the rest into its ring.
@@ -60,7 +60,7 @@ One more rule keeps the queue from starving. A worker running only its slot and 
 
 `LaneQueue` is currently a plain queue behind a spin lock, not a lock-free structure. Each lane has its own queue so contention is already low, and a structure I fully understand is one I can fix at two in the morning. That choice only holds because every hot path touches the lock in batches, spreading the cost over a few dozen jobs. Touch it once per job and the lock would not survive.
 
-The planned replacement is what crossbeam and Bevy both use: a linked list of blocks, where most pushes are a single atomic bump inside the current block and only a full block allocates. Two things would trigger the switch. One is measurement showing workers really do wait on the lock. The other is priority inversion, since a low priority blocking thread can be preempted while holding a lock a compute worker is spinning on.
+The planned replacement is what crossbeam and Bevy both use: a linked list of blocks, where most pushes are a single atomic bump inside the current block and only a full block allocates. Two things would trigger the switch. One is measurement showing workers really do wait on the lock. The other is priority inversion, since a low priority async lane thread can be preempted while holding a lock a compute worker is spinning on.
 
 ## References
 - https://docs.rs/crossbeam-deque/latest/crossbeam_deque/struct.Injector.html

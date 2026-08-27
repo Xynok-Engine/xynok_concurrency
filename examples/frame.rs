@@ -6,6 +6,7 @@
 //! cho cả pool, một asset đọc từ đĩa vắt qua nhiều frame, lệnh gửi cho thread audio, và vài lời gọi
 //! buộc phải nằm trên main thread.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -27,11 +28,11 @@ const BATCH: usize = 512;
 
 fn main()
 {
-    let lanes = Lanes::from_env();
+    let lanes = Arc::new(Lanes::from_env());
     println!(
-        "lane compute: {} worker cộng thread gọi, lane blocking: {} worker",
+        "lane compute: {} worker cộng thread gọi, lane async: {} worker",
         lanes.compute().worker_threads(),
-        lanes.blocking().worker_threads()
+        lanes.async_lane().worker_threads()
     );
 
     // Kênh gửi lệnh cho audio. Một người ghi, một người đọc, và phía đọc không bao giờ lấy khoá.
@@ -42,10 +43,22 @@ fn main()
     let mut positions = vec![0.0f32; ENTITIES];
     let velocities: Vec<f32> = (0..ENTITIES).map(|i| (i % 17) as f32 * 0.01).collect();
 
-    // Asset load bắt đầu ở frame 0 và không ai đợi nó.
-    let mut loading = Some(lanes.run_blocking(|| {
-        std::thread::sleep(Duration::from_millis(80));
-        "scene.pak".to_string()
+    // Asset load bắt đầu ở frame 0 và không ai đợi nó. Cả chuỗi "đọc rồi decode" là một task của
+    // lane async: giữa hai bước nó `.await`, tức là trả thread lại cho lane chứ không ngồi giữ.
+    let loader = Arc::clone(&lanes);
+    let mut loading = Some(lanes.spawn_async(async move {
+        let raw = loader
+            .run_blocking(|| {
+                std::thread::sleep(Duration::from_millis(80));
+                "scene.pak".to_string()
+            })
+            .await?;
+
+        let decoded = loader.run_blocking(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            format!("{raw} (đã decode)")
+        });
+        decoded.await
     }));
 
     let audio_callbacks = AtomicU64::new(0);
@@ -92,7 +105,8 @@ fn main()
         {
             match pending.try_recv()
             {
-                Ok(name) => println!("frame {frame}: nạp xong {name}"),
+                Ok(Some(name)) => println!("frame {frame}: nạp xong {name}"),
+                Ok(None) => println!("frame {frame}: nạp hỏng"),
                 Err(still_loading) => loading = Some(still_loading),
             }
         }

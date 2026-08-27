@@ -14,5 +14,6 @@ pub mod per_worker;
 pub mod bump;
 pub mod job_graph;
 pub mod channel;
+pub mod task;
 pub mod lanes;
 pub mod profile;
