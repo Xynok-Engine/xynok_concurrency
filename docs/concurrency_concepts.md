@@ -1,7 +1,7 @@
 ---
 title: Concurrency Concepts
 excerpt: Key concepts and keywords to keep in mind when working with multithreaded programming.
-cover img: https://upload.wikimedia.org/wikipedia/commons/thumb/9/9d/Multithreaded_process.svg/1280px-Multithreaded_process.svg.png
+cover img: https://preview.redd.it/parallelism-be-like-v0-9tu18n684z331.jpg?auto=webp&s=251119eba2b3b80b982934c71919990a77f7236c
 tags:
   - addendum
 ---
@@ -185,3 +185,4 @@ None of these replaces the others, and a stress test replaces none of them. A st
 - https://en.wikipedia.org/wiki/Work_stealing
 - https://github.com/tokio-rs/loom
 - https://github.com/rust-lang/miri
+- https://github.com/kaisellgren/Concurrency-concepts
