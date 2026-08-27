@@ -3,7 +3,7 @@ title: Concurrency Concepts
 excerpt: Key concepts and keywords to keep in mind when working with multithreaded programming.
 cover img: https://upload.wikimedia.org/wikipedia/commons/thumb/9/9d/Multithreaded_process.svg/1280px-Multithreaded_process.svg.png
 tags:
-  - concept
+  - addendum
 ---
 
 ## Preface
