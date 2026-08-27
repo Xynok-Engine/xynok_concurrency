@@ -90,9 +90,9 @@ steal. Nó nhận lệnh qua một ring SPSC và chỉ đọc.
                     ┌──────────────────── frame N ─────────────────────────┐
  main thread        │ event │ begin │ ==== tham gia pool lane A ==== │ present
                     │       │       │                                │
- pool A · worker 0  │       │       │ [physics] [ecs] [cull] [record] │
- pool A · worker 1  │       │       │ [physics] [ecs] [cull] [record] │
- pool A · worker 2  │       │       │ [physics] [ecs] [cull] [record] │
+ pool A · worker 0  │       │       │ [physics] [ecs] [cull] [record]│
+ pool A · worker 1  │       │       │ [physics] [ecs] [cull] [record]│
+ pool A · worker 2  │       │       │ [physics] [ecs] [cull] [record]│
                     │       │       │                                │
  pool B · io 0      │ ······· đọc scene.pak, vắt qua nhiều frame ················>
  pool B · io 1      │ ······· decode texture ····································>

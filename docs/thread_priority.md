@@ -41,6 +41,27 @@ Modern CPUs may also feature two distinct types of cores:
 
 ### The OS Scheduler
 
+```mermaid
+---
+config:
+layout: elk
+---
+flowchart TD
+Runnable["Runnable<br/>Waiting for CPU"]
+Running["Running<br/>Currently executing"]
+Blocked["Blocked<br/>Not using CPU"]
+
+Runnable -->|Scheduler selects| Running
+Running -->|Time slice expired / Preempted| Runnable
+
+Running -->|Wait for I/O / Mutex / Event| Blocked
+Blocked -->|I/O completed / Woken up| Runnable
+
+style Runnable fill:#eef2ff,stroke:#818cf8
+style Running fill:#f0fdf4,stroke:#4ade80
+style Blocked fill:#fff7ed,stroke:#fb923c
+```
+
 The operating system scheduler is responsible for making constant decisions about thread management. Its primary duties include:
 
 1. Determining which thread executes at any given moment.
@@ -49,27 +70,6 @@ The operating system scheduler is responsible for making constant decisions abou
 4. Calculating the time slice (or quantum) a thread is permitted to run before it must yield to another process.
 
 At a high level, the lifecycle of a thread transitions through several states managed by this scheduler.
-
-```mermaid
----
-config:
-  layout: elk
----
-flowchart TD
-    Runnable["Runnable<br/>Waiting for CPU"]
-    Running["Running<br/>Currently executing"]
-    Blocked["Blocked<br/>Not using CPU"]
-
-    Runnable -->|Scheduler selects| Running
-    Running -->|Time slice expired / Preempted| Runnable
-
-    Running -->|Wait for I/O / Mutex / Event| Blocked
-    Blocked -->|I/O completed / Woken up| Runnable
-
-    style Runnable fill:#eef2ff,stroke:#818cf8
-    style Running fill:#f0fdf4,stroke:#4ade80
-    style Blocked fill:#fff7ed,stroke:#fb923c
-```
 
 ### QoS (Quality of Service)
 
@@ -201,58 +201,9 @@ Neither of those is pinning. The engine never calls an affinity API, and the OS 
 
 The setting belongs to the lane as a whole, not to individual jobs. Workers stealing from one another or handling wildly different work still carry the priority profile chosen at initialization.
 
-### Why must the worker set its own priority?
+**Why must the worker set its own priority?**
 
 The APIs used by this module affect the **calling thread**. Consequently, the following logic must execute within the worker itself:
-
-```rust
-fn worker_loop(shared: Arc<Shared>, index: usize) {
-    // The `current thread` here is the worker itself.
-    shared.priority.apply_to_current_thread();
-
-    // Start the loop to find and run jobs...
-}
-```
-
-If you call `apply_to_current_thread()` inside `ThreadPool::new` before spawning, the code would modify the priority of the thread creating the pool, which is usually the main thread, rather than the workers being created.
-
-## Usage
-
-In most cases, you do not need to call `apply_to_current_thread()` directly. Simply configure the pool:
-
-```rust
-use xynok_concurrency::apis::priority::Priority;
-use xynok_concurrency::pool::{Config, ThreadPool};
-
-let pool = ThreadPool::new(Config {
-    threads: 2,
-    thread_name: "asset-loader".to_string(),
-    priority: Priority::Io,
-    ..Config::default()
-});
-```
-
-Every worker spawned by this pool will set its priority on startup.
-
-Note the explicit `threads`. `Config::default()` sizes a pool for compute work, one worker per core minus one, which is far more threads than an asset loader ever wants.
-
-With the default lane system, the configuration is already predefined:
-
-```rust
-use xynok_concurrency::lanes::{LaneId, Lanes, LanesConfig};
-
-let lanes = Lanes::new(LanesConfig::default());
-
-// Runs on compute workers with Priority::Frame.
-lanes.spawn(LaneId::Compute, || {
-    // physics, animation, culling...
-});
-
-// Runs on blocking workers with Priority::Io.
-lanes.spawn(LaneId::Blocking, || {
-    let _ = std::fs::read("scene.pak");
-});
-```
 
 ## Limitations and Common Misconceptions
 
@@ -297,7 +248,6 @@ It is a thin policy layer that connects two vital parts of the engine: the lane 
 
 - [`src/apis/priority.rs`](../src/apis/priority.rs): Platform-specific implementation.
 - [`src/pool/mod.rs`](../src/pool/mod.rs): Storage for configuration and worker priority application.
-- [`src/lanes.rs`](../src/lanes.rs): Default priority selection for Compute and Blocking lanes.
 - [`docs/lane_queue.md`](lane_queue.md): How jobs are dispatched to and moved between lane workers.
 
 External reading:

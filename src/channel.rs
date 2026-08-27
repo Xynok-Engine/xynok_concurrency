@@ -245,8 +245,8 @@ impl<T> std::fmt::Debug for Receiver<T>
 #[cfg(all(test, not(loom)))]
 mod test
 {
-    use std::sync::Arc as StdArc;
     use std::sync::atomic::{AtomicUsize, Ordering as StdOrdering};
+    use std::sync::Arc as StdArc;
 
     use super::*;
     use crate::pool::Config;
