@@ -1,6 +1,7 @@
 ---
 title: Thread Priority
 excerpt: OS scheduler, thread priority, and how Xynok keeps frame work ahead of background work.
+cover img: https://www.cgdirector.com/wp-content/uploads/media/2021/10/Intel-P-Cores-vs-E-Cores-Twitter-1200x675.jpg
 tags:
   - concurrency
   - performance
