@@ -12,6 +12,10 @@ Tài liệu này chốt hai thứ:
 1. **Flow của engine khi nhiều lane cùng chạy**: ai chạy ở đâu, nói chuyện với nhau bằng gì.
 2. **Kế hoạch sửa** `xynok_concurrency` và `xynok_ecs` để flow đó thành hiện thực.
 
+Trạng thái tính tới 27/08/2026: toàn bộ M1 tới M4 của `xynok_concurrency` đã làm xong, kể cả những
+thứ trước đó ghi là "phải viết mới". Việc tiếp theo là **E1** ở [mục 6](#6-kế-hoạch-xynok_ecs), phía
+`xynok_ecs`, và không còn gì chặn nó nữa.
+
 | phần | nội dung |
 |---|---|
 | [1](#1-ba-crate-đang-ở-đâu) | Ba crate đang ở đâu |
@@ -29,19 +33,20 @@ Tài liệu này chốt hai thứ:
 
 | crate | vai trò | trạng thái |
 |---|---|---|
-| `xynok_concurrency` | mọi thứ song song sống ở đây | nguyên liệu tầng thấp xong, **chưa có pool** |
-| `xynok_workers` | pool đời trước, 13.6k dòng | chạy được, nhưng một hàng đợi bounded dùng chung, không work-stealing |
-| `xynok_ecs` | dữ liệu và system | chunk archetype xong, scheduler chạy tuần tự |
+| `xynok_concurrency` | mọi thứ song song sống ở đây | **M1 tới M4 xong**, xem [mục 5](#5-kế-hoạch-xynok_concurrency) |
+| `xynok_workers` | pool đời trước, khoảng 7.5k dòng | đóng băng, chỉ còn dùng làm tham chiếu |
+| `xynok_ecs` | dữ liệu và system | chunk archetype xong, scheduler vẫn chạy tuần tự |
 
-**`xynok_concurrency` đang có**: ring FIFO/LIFO SPMC kèm batch steal (có loom, miri, stress),
-`InlineFn` 64 byte vừa một cache line, `QueueBatching` (lane queue thô), `Waker` (latch), `Priority`
-mới có macOS, `pack`/`unpack` trong [`utils/mod.rs`](../src/utils/mod.rs) đúng cái sẽ dùng cho ô
-atomic của sleep protocol. Thiếu đúng tầng giữa: **không có pool nào được export**.
+**`xynok_concurrency` đang có**: ba ring (FIFO/LIFO SPMC kèm batch steal, và SPSC cho audio, đều có
+loom và stress), `InlineFn` 64 byte vừa một cache line, [`LaneQueue`](../src/lane_queue.rs),
+[`ThreadPool`](../src/pool/mod.rs) work-stealing với giao thức ngủ riêng, `Scope` (`join`,
+`parallel_for`, `par_reduce`), `JobGraph`, `PerWorker`, `Bump`, kênh oneshot, registry
+[`Lanes`](../src/lanes.rs), `profile::Sink` và bộ đếm. `Priority` giờ có cả ba nền tảng.
 
-**`xynok_workers` có sẵn thứ đáng mang sang**: `Latch`, `Scope` (`parallel_for`, `par_reduce`,
-`spawn_on`), `PerWorker`, `JobGraph` (`spawn_after`), `Bump` (arena mỗi frame), `OneshotChannel`,
-`profile::Sink`, `Priority` ba nền tảng. Thứ không mang sang là hàng đợi bounded: `push` trả
-`Result<(), T>` và đó chính là lỗ hổng mà [docs/lane_queue.md](./lane_queue.md) mô tả.
+**Thứ đã mang sang từ `xynok_workers`**: `Latch` (viết lại để vé đi được vào job), `Scope`,
+`PerWorker`, `JobGraph`, `Bump`, `OneshotChannel`, `profile::Sink`. Thứ không mang sang là hàng đợi
+bounded: `push` trả `Result<(), T>` và đó chính là lỗ hổng mà [lane_queue.md](./lane_queue.md) mô
+tả.
 
 **`xynok_ecs` có sẵn thứ quan trọng nhất**: `AccessScopes::can_parallel_with`
 ([`query/access_scope.rs:124`](../../xynok_ecs/src/query/access_scope.rs)). Câu hỏi khó nhất của
@@ -49,7 +54,7 @@ một ECS scheduler song song đã được trả lời rồi. Chỉ là `Defaul
 ([`schedule/scheduler.rs:80`](../../xynok_ecs/src/schedule/scheduler.rs)) vẫn đang chạy vòng `for`
 tuần tự và chưa ai hỏi tới nó.
 
-`src/thread_pool.rs` là bản nháp trong `#[cfg(test)]`, sẽ xóa ở bước đầu tiên.
+`src/thread_pool.rs` là bản nháp trong `#[cfg(test)]`, đã xóa ở bước đầu tiên.
 
 ---
 
@@ -126,12 +131,13 @@ barrier.
 | worker | lane queue cùng lane | `spill_half` khi ring đầy | biến biên cứng của ring thành ngưỡng xả |
 | lane A | lane B | lane queue của lane B | submit từ ngoài, cùng cơ chế |
 | lane B | lane A | lane queue của lane A, hoặc `JobHandle` hoàn thành | asset xong thì đánh thức job đang đợi |
-| lane A | audio | **ring SPSC bounded**, chưa có, phải viết | audio không được lock, không được allocate |
+| lane A | audio | **ring SPSC bounded** ([`ring_buffer_spsc`](../src/ring_buffer_spsc/mod.rs)) | audio không được lock, không được allocate |
 | lane A | main thread | hàng đợi "chỉ main chạy" | present, window API, một số lời gọi driver bắt buộc đúng thread |
 | job | job cha | `OneshotChannel`, hoặc latch | trả kết quả về điểm join |
 
-Ô duy nhất trong bảng cần viết mới hoàn toàn là ring SPSC cho audio. Hai ring hiện có đều là SPMC,
-và audio cần thứ ngược lại: một người ghi, một người đọc, wait-free ở phía đọc.
+Ô duy nhất trong bảng phải viết mới hoàn toàn là ring SPSC cho audio, vì hai ring cũ đều là SPMC còn
+audio cần thứ ngược lại: một người ghi, một người đọc, wait-free ở **cả hai** phía chứ không riêng
+phía đọc. Nó xong rồi, và cả bảng này giờ đã có mặt đủ trong code.
 
 ---
 
@@ -145,52 +151,106 @@ Không có mốc này thì không có gì khác chạy được.
 |---|---|
 | M1.1 | **Xong.** Xóa `src/thread_pool.rs`, đổi `custom_type::Job` sang `InlineFn`, thêm test job chạy qua ring và bị thả cùng ring |
 | M1.2 | **Xong.** [`src/lane_queue.rs`](../src/lane_queue.rs): độ dài đọc được không cần khoá, `steal_batch_and_pop` nạp thẳng vào ring bằng một lần publish, trait `LocalQueue` để dùng chung cho cả hai loại ring. Bản linked list block lock-free để sau, xem [mục 8](#8-ba-quyết-định-đã-chốt) |
-| M1.3 | Nối `spill_half` (đã có ở [`ring_buffer_fifo/owner.rs:251`](../src/ring_buffer_fifo/owner.rs), chưa ai gọi). Viết `spill_half` cho `ring_buffer_lifo` |
-| M1.4 | **Sleep protocol**: một ô atomic đóng gói `(num_searching, num_unparked)` bằng `pack`/`unpack` sẵn có, cộng danh sách thread đang park. Trần searcher ở 50% worker |
-| M1.5 | Worker loop: `lifo_slot -> ring -> lane_queue -> steal -> lane_queue -> park`, kèm `tick % 61` ép ngó lane queue |
-| M1.6 | `ThreadPool`: `new(Config)`, `inject`, `worker_index`, `shutdown` có thứ tự, `threads: 0` chạy inline. Export ở `lib.rs` |
-| M1.7 | Loom cho sleep protocol. Đây là phần dễ sai nhất và là thứ duy nhất bắt được lost wakeup |
+| M1.3 | **Xong.** `spill_half` được `Shared::push_local` gọi khi ring đầy, và `ring_buffer_lifo` giờ có bản của riêng nó ([`ring_buffer_lifo/owner.rs`](../src/ring_buffer_lifo/owner.rs)): chủ bốc được cả lô ở phía `top`, khác kẻ trộm, vì `bottom` không đổi dưới lưng nó |
+| M1.4 | **Xong.** [`src/pool/sleep.rs`](../src/pool/sleep.rs). Một ô atomic gói **ba** con số chứ không phải hai, xem ghi chú bên dưới. Trần searcher ở 50% worker, sàn là một |
+| M1.5 | **Xong.** Worker loop trong [`src/pool/mod.rs`](../src/pool/mod.rs): `lifo_slot -> ring -> lane_queue -> steal -> lane_queue -> park`, kèm `tick % 61` ép ngó lane queue |
+| M1.6 | **Xong.** `ThreadPool::new(Config)`, `spawn`, `worker_index`, `shutdown` có thứ tự, `threads: 0` chạy inline |
+| M1.7 | **Xong.** [`src/pool/tests/loom.rs`](../src/pool/tests/loom.rs), bốn mô hình, cộng stress test có trần cứng |
 
-M1.4 là phần khó nhất của cả kế hoạch. `Waker` hiện tại chộp `thread::current()` ngay trong `new()`
-([`utils/waker.rs:28`](../src/utils/waker.rs)) nên nó là latch một lần dùng, không phải giao thức
-ngủ của pool.
+M1.4 đúng là phần khó nhất, và nó không chạy đúng ngay từ bản đầu. Hai chỗ phải sửa, cả hai đều đáng
+ghi lại:
+
+**Trần searcher phải có sàn.** Lấy đúng 50% thì pool một hoặc hai worker có trần bằng 0, tức là
+không worker nào được phép đi trộm, và việc nằm trong ring của người khác thì nằm đó mãi. Một test
+treo 60 giây mới lòi ra chuyện này.
+
+**Hai con số là chưa đủ, phải có ba.** Bản đầu chỉ gói `(searching, unparked)` và `notify` đọc ô đó
+bằng một `load` thường. Loom dựng lại được cảnh: worker đọc hàng đợi thấy rỗng (một giá trị cũ, mà
+mô hình bộ nhớ cho phép), còn người đẩy job thì đọc thấy "chưa ai ngủ" và bỏ đi. Cách bịt là thêm
+một **bộ đếm sự kiện** vào cùng ô, và bắt cả hai phía chạm ô đó bằng một read-modify-write: worker
+đọc bộ đếm trước khi đi tìm việc, rồi so lại lúc sắp ngủ. Hai RMW trên cùng một địa chỉ thì luôn có
+một cái đến trước, nên không còn khe nào ở giữa.
+
+`Waker` cũ vẫn ở nguyên chỗ của nó ([`utils/waker.rs`](../src/utils/waker.rs)): nó chộp
+`thread::current()` ngay trong `new()` nên là latch một lần dùng. [`Latch`](../src/latch.rs) mới là
+bản dùng được từ trong job.
+
+Một cái bẫy nữa ở M1.6, và nó chỉ lộ ra khi chạy ví dụ thật chứ không test nào bắt được: **một
+thread chỉ nhớ được chỗ đứng ở một pool**. `Lanes` dựng hai pool trên cùng main thread, nên pool
+dựng sau ghi đè chỗ đứng của pool trước, và main thread mất cái ring của nó ở pool kia. Không sai
+kết quả, chỉ là mọi job nó spawn phải đi vòng qua lane queue, tức là qua một cái khoá, cho từng job
+một. Bộ đếm ở M4.2 nói ra ngay: `lane_pops` bằng hơn nửa số job đã chạy. Bịt bằng hai thứ, một cái
+chữa triệu chứng và một cái chữa gốc: `Lanes` dựng lane blocking trước lane compute, và
+`Shared::context` có thêm một đường lùi so id thread với host. Ví dụ `frame` chạy nhanh hơn 30% sau
+khi sửa, và `lane_pops` về 0.
 
 ### M2. Fork-join, thứ ECS gọi trực tiếp
 
 | bước | việc |
 |---|---|
-| M2.1 | `Latch` dùng được từ trong job. `WakerSignal<'a>` mượn `&'a Waker` nên không nhét vào `InlineFn` (`'static`) được. Giải bằng raw pointer kiểu `HeapMut`, an toàn vì `wait()` chặn cho tới khi mọi ticket drop |
-| M2.2 | **Work-while-waiting**. Người đợi lấy job về chạy thay vì park. Không có cái này thì mọi barrier lồng nhau hoặc là deadlock, hoặc là bỏ phí core |
-| M2.3 | `scope()`, `join(a, b)`, `parallel_for`, `par_reduce`. Port từ `xynok_workers/src/scope.rs`, đổi nền sang ring work-stealing |
-| M2.4 | `JobGraph` với `spawn_after(deps)`. Port từ `xynok_workers/src/job_graph.rs`. Đây là thứ ECS scheduler và frame graph đều dùng |
-| M2.5 | `PerWorker<T>` và `worker_index()` ổn định trong `0..N`. Vulkan bắt buộc: `VkCommandPool` không thread-safe nên mỗi worker một pool riêng |
-| M2.6 | `Bump` arena mỗi worker mỗi frame, `end_frame()` reset một nhát. Port từ `xynok_workers/src/bump.rs` |
+| M2.1 | **Xong.** [`src/latch.rs`](../src/latch.rs). Vé mang con trỏ thô thay cho tham chiếu nên đi được vào `InlineFn`, an toàn vì lần chờ không trả về khi còn vé chưa thả. Vé trừ bộ đếm lúc `Drop`, nên job panic cũng không mang nó xuống mồ |
+| M2.2 | **Xong.** `ThreadPool::run_until`, và mọi điểm join đều đi qua nó |
+| M2.3 | **Xong.** [`src/scope.rs`](../src/scope.rs): `scope()`, `join`, `parallel_for`, `par_reduce`. Job của scope không phải `'static`, và cũng không phải box: `InlineFn::new_unbound` nhận closure mượn stack, đổi lại người gọi phải bảo đảm job xong trước khi stack đó biến mất, mà đó đúng là thứ scope làm |
+| M2.4 | **Xong.** [`src/job_graph.rs`](../src/job_graph.rs): `spawn_with_handle` và `spawn_after(deps)` |
+| M2.5 | **Xong.** [`src/per_worker.rs`](../src/per_worker.rs), kèm cờ bắt lỗi mượn hai lần cùng một ô, vì work-while-waiting làm chuyện đó với tới được |
+| M2.6 | **Xong.** [`src/bump.rs`](../src/bump.rs), cộng `ThreadPool::scratch` và `end_frame` |
 
 `scope()` ở đây **không phải** để ECS mượn `World`: `World` đi qua `HeapMut` nên đã `'static` sẵn.
 Nó cần cho hai chỗ khác: chia chunk bên trong một system, và mọi code engine ngoài ECS muốn
 fork-join trên dữ liệu stack.
 
+Một cái bẫy chung của M2.3 và M2.4, và miri là thứ chỉ ra nó với đúng bốn chữ **"trying to join
+itself"**: `Scope` và nút của `JobGraph` ban đầu giữ nguyên một `ThreadPool`, mà `ThreadPool` thì
+giữ đám join handle, tức là nó là một tay cầm **giữ cho pool sống**. Trình tự dẫn tới tai nạn:
+
+```text
+worker:  chạy xong job của nút, thả vé latch
+scope:   thấy bộ đếm về 0, trả về
+gọi:     thả nốt tay cầm pool cuối cùng của mình
+worker:  vẫn còn trong Node::run một nhịp nữa, dọn danh sách kế nhiệm rồi thả Arc<Node>
+worker:  đó là tay cầm pool cuối cùng  ->  Drop  ->  shutdown  ->  join chính mình
+```
+
+Cách bịt là tách "phần dùng chung" khỏi "phần giữ cho sống": cả hai giờ giữ `Arc<Shared>`, và
+`Shared` cố ý không chứa join handle nào. Ai muốn pool sống thì phải cầm một `ThreadPool` thật.
+
+Cùng cái bẫy ấy vẫn với tới được từ phía người dùng: chỉ cần một job bắt được một `ThreadPool`
+clone rồi tình cờ là kẻ thả cái tay cầm cuối cùng. Nên `shutdown` không cấm suông nữa mà xử lý hẳn:
+nếu thread đang gọi là worker của chính pool đó thì nó bỏ bước join và chỉ thả các handle ra, để
+thread tự kết thúc khi thấy cờ shutdown. Đổi lại, `shutdown` trả về trước khi worker dừng hẳn, nên
+đường tử tế vẫn là tắt pool từ thread đã dựng nó.
+
 ### M3. Lane và kênh chuyên dụng
 
 | bước | việc |
 |---|---|
-| M3.1 | `Priority` cho Linux (`nice`, `sched_setattr`) và Windows (`SetThreadPriority`, `THREAD_POWER_THROTTLING`). Hiện chỉ có macOS |
-| M3.2 | Lane B: pool blocking riêng, cộng `block_in_place` làm cửa thoát khi một job lane A lỡ phải chờ fence |
-| M3.3 | **Ring SPSC bounded** cho audio. Wait-free phía đọc, không allocate, không lock. Viết mới |
-| M3.4 | Hàng đợi main-thread: `spawn_on_main` và `run_pending_on_main` gọi trong vòng lặp frame |
-| M3.5 | `OneshotChannel` port từ `xynok_workers/src/channel.rs` |
-| M3.6 | Registry lane: `LaneId`, mỗi lane một pool, config đọc từ env để tune không cần build lại |
+| M3.1 | **Xong.** Ba nền tảng, kèm `THREAD_POWER_THROTTLING` để thread frame không bị Windows dọn xuống core tiết kiệm điện. Util clamp trên Linux (`sched_setattr`) để sau, xem ghi chú bên dưới |
+| M3.2 | **Xong.** `Lanes::blocking()` là pool riêng, priority thấp, ngủ sớm. `block_in_place` có, kèm ghi rõ giới hạn: nó gọi thêm một worker dậy chứ không spawn worker thay thế |
+| M3.3 | **Xong.** [`src/ring_buffer_spsc`](../src/ring_buffer_spsc/mod.rs). Không CAS ở đâu cả nên cả hai phía đều wait-free, và có loom kiểm ba tính chất: không mất phần tử, nội dung hiện ra cùng lúc với chỉ số, người ghi không đè lên ô chưa đọc |
+| M3.4 | **Xong.** `Lanes::spawn_on_main` và `run_pending_on_main`. Lần vét chỉ chạy những job đã có mặt lúc bắt đầu, để một job đẻ job không giữ main thread lại vô hạn |
+| M3.5 | **Xong.** [`src/channel.rs`](../src/channel.rs), kèm một thứ bản cũ không có: đầu gửi biến mất mà chưa gửi gì thì người chờ nhận `None` chứ không treo. Job panic là chuyện xảy ra thật |
+| M3.6 | **Xong.** [`src/lanes.rs`](../src/lanes.rs): `LaneId`, `Lanes`, config đọc từ `XYNOK_LANE_THREADS` và `XYNOK_BLOCKING_THREADS` |
+
+`sched_setattr` để lại có lý do chứ không phải quên: nó là một syscall thô, số hiệu khác nhau theo
+kiến trúc, và nó chỉ đáng làm khi đã có số đo cho thấy governor đang hạ tần số nhầm chỗ.
 
 ### M4. Đo đạc và hardening
 
 | bước | việc |
 |---|---|
-| M4.1 | `profile::Sink` port, một zone mỗi job, cắm được Tracy hoặc Superluminal |
-| M4.2 | Counter: steal trúng/trượt, park/unpark, độ sâu lane queue, thời gian tìm việc. Không có số thì không tune được kích thước ring, số worker, hằng 61 |
-| M4.3 | Loom cho scope và job graph. Miri. Stress test **phải có trần cứng** cho mọi vòng gom kết quả |
-| M4.4 | Chế độ `threads: 0` chạy inline, để trả lời câu "bug này có phải do đa luồng không" |
+| M4.1 | **Xong.** [`src/profile.rs`](../src/profile.rs), một zone mỗi job, cộng `worker_park`/`worker_unpark` là thứ profiler không nhìn thấy từ ngoài |
+| M4.2 | **Xong.** [`src/pool/counters.rs`](../src/pool/counters.rs): job đã chạy, trộm trúng/trượt, lần lấy từ lane queue, lần xả, lần park, độ sâu lane queue. Mỗi worker một ô riêng trên một cache line riêng, vì đo mà làm chậm thứ đang đo thì con số đọc ra không nói về hệ thống thật nữa |
+| M4.3 | **Một phần.** Loom phủ giao thức ngủ, latch, ring SPSC, hai ring cũ. Scope và job graph thì đang dựa vào stress test có trần cứng chứ chưa có mô hình loom, xem ghi chú bên dưới. Miri chạy sạch trên nhóm test của pool |
+| M4.4 | **Xong.** `Config::inline()`, cộng `XYNOK_LANE_THREADS=1` để tắt song song mà không sửa dòng code nào |
 
-M4.4 nên làm sớm hơn vị trí của nó trong bảng, ngay khi pool chạy được.
+Vì sao scope và job graph chưa có loom: cả hai đều dựng trên một `ThreadPool` thật, mà pool thì dùng
+`thread_local` để biết mình là ai. Dưới loom thì các "thread" là coroutine chạy trên một thread OS
+duy nhất, nên `thread_local` của std không tách được chúng ra, và mô hình sẽ nói dối. Muốn làm cho
+đúng thì phải bọc chỗ đăng ký đó lại sau một lớp thay được, và đó là việc đáng làm riêng chứ không
+nên nhét vào đây.
+
+M4.4 đã làm sớm hơn vị trí của nó trong bảng, đúng như ghi chú cũ đề nghị: `threads: 0` có từ lúc
+`ThreadPool` chạy được lần đầu.
 
 ---
 
@@ -243,26 +303,29 @@ transform), không phải cho ECS scheduler. Với ECS thì "danh sách bước"
 ## 7. Thứ tự thực hiện
 
 ```text
-M1  lõi pool  ──────────────────────────────────▶ mọi thứ khác phụ thuộc vào đây
+M1  lõi pool  ✓ ────────────────────────────────▶ mọi thứ khác phụ thuộc vào đây
       │
-      ├──▶ M2.1  latch                    ─┐
-      ├──▶ M2.2  work-while-waiting        ├──▶ E1  scheduler song song
-      └──▶ M2.3  scope, parallel_for      ─┘        (ECS lần đầu ăn nhiều core)
+      ├──▶ M2.1  latch                 ✓  ─┐
+      ├──▶ M2.2  work-while-waiting    ✓   ├──▶ E1  scheduler song song  ◀── ở đây
+      └──▶ M2.3  scope, parallel_for   ✓  ─┘        (ECS lần đầu ăn nhiều core)
                   │
-                  ├──▶ M2.4  job graph  ──▶ frame graph phía engine
-                  ├──▶ M2.5  PerWorker  ──▶ E3  command buffer
-                  ├──▶ M2.6  Bump
+                  ├──▶ M2.4  job graph ✓ ──▶ frame graph phía engine
+                  ├──▶ M2.5  PerWorker ✓ ──▶ E3  command buffer
+                  ├──▶ M2.6  Bump      ✓
                   └──▶ E2  parallel query
                             │
-                            └──▶ M3  lane B, audio SPSC, main queue
+                            └──▶ M3  lane B, audio SPSC, main queue  ✓
                                        │
-                                       └──▶ M4  đo đạc, hardening
+                                       └──▶ M4  đo đạc, hardening  ✓
 ```
 
-Mốc đáng ăn mừng là hết **E1**: lần đầu ECS chạy trên nhiều core thật, và cũng là lần đầu có số
-liệu để tune thay vì đoán.
+Cả `xynok_concurrency` đã xong, nên việc tiếp theo là **E1** phía `xynok_ecs`, và không còn gì chặn
+nó nữa: `scope`, `Latch`, work-while-waiting và `PerWorker` đều đã có mặt.
 
-`xynok_workers` đóng băng từ bây giờ, dùng làm tham chiếu, cho nghỉ khi M2 xong.
+Mốc đáng ăn mừng vẫn là hết **E1**: lần đầu ECS chạy trên nhiều core thật, và cũng là lần đầu có số
+liệu để tune thay vì đoán. Trước đó thì mọi con số trong tài liệu này vẫn là phỏng đoán có lý do.
+
+`xynok_workers` đóng băng từ đây, chỉ còn dùng làm tham chiếu.
 
 ---
 
@@ -273,6 +336,13 @@ liệu để tune thay vì đoán.
 Nâng cấp thứ đang có, không dựng linked list block lock-free ngay. Lý do thực dụng: mỗi lane một
 hàng đợi riêng nên tranh chấp vốn đã thấp, và một cấu trúc mà mình hiểu rõ thì sửa được lúc 2 giờ
 sáng.
+
+Lựa chọn đó chỉ đứng được nhờ một điều kiện, và cần nói rõ vì ngày nào nó gãy thì quyết định này
+gãy theo: **mọi đường nóng chạm khoá theo cụm**. Submit từ ngoài đi `push` một lần rồi thôi, worker
+lấy việc thì `steal_batch_and_pop` bốc cả cụm, ring đầy thì `spill_half` xả nửa hàng một lượt. Chi
+phí một lần giành khoá được chia đều cho vài chục job. Nếu có chỗ nào chạm khoá một lần cho một
+job, spinlock không sống nổi, và đó là dấu hiệu phải sửa chỗ gọi trước khi nghĩ tới việc đổi cấu
+trúc. Bộ đếm `spills` và `lane_pops` ở M4.2 là chỗ nhìn ra chuyện đó.
 
 Bản block lock-free vẫn nằm trong kế hoạch, để sau. Ý tưởng của nó, ghi lại ở đây để lần sau khỏi
 phải đi tìm: hàng đợi là một **danh sách liên kết các block**, mỗi block chứa vài chục slot.
@@ -294,8 +364,13 @@ hồi block khi vẫn còn thread đang đọc trong đó, và cách crossbeam g
 block: thread cuối cùng rời block là thằng giải phóng nó. Đó cũng chính là phần đáng để hiểu kỹ
 trước khi viết. Mục 7 của [lane_queue.md](./lane_queue.md) nói thêm về nó.
 
-Cột mốc để quay lại quyết định này: số liệu ở M4.2 cho thấy worker tốn đáng kể thời gian chờ khoá
-lane queue.
+Hai cột mốc để quay lại quyết định này:
+
+- Số liệu ở M4.2 cho thấy worker tốn đáng kể thời gian chờ khoá lane queue.
+- **Priority inversion**: một thread lane B priority thấp bị OS cắt ngang trong lúc đang giữ khoá,
+  còn một worker lane A thì đang quay tại chỗ chờ đúng cái khoá đó. Số liệu của nó không phải
+  throughput trung bình mà là p99 frame time lúc máy tải nặng, và triệu chứng này đủ để đổi cấu
+  trúc kể cả khi throughput vẫn đẹp.
 
 ### 8.2. Asset IO: thread block thuần trước, chừa chỗ cho async
 
@@ -339,10 +414,30 @@ Con số **20 micro giây** là thời gian mục tiêu cho một job, không ph
 ra `batch`: đo được mỗi entity tốn 200 ns thì `batch = 20µs / 200ns = 100`. Chọn 20 µs vì nó đủ lớn
 để chi phí spawn (~2 µs) chỉ chiếm 10%, và đủ nhỏ để 8 core vẫn chia đều được việc.
 
+### Số đo thật, thay cho phỏng đoán
+
+`benches/pool.rs` đo lại đúng mấy con số ở trên. Trên M-series 12 core, pool 4 worker cộng thread
+gọi, 65 536 phần tử, lấy median:
+
+| việc mỗi phần tử | batch 64 | batch 1024 | một job (tuần tự) |
+|---|---|---|---|
+| 16 phép nhân | 102 µs | **69 µs** | 266 µs |
+| 1 phép nhân | 84 µs | 18 µs | **20 µs** |
+
+Hàng trên là chỗ chia có lãi: nhanh gấp 3.8 lần chạy tuần tự, và `batch = 64` đã bắt đầu lỗ so với
+`1024` vì chi phí spawn. Hàng dưới là chỗ chia thành lỗ: một phép nhân mỗi phần tử thì `batch = 64`
+chậm gấp bốn lần cứ để yên mà chạy, còn `batch = 1024` chỉ ngang bằng.
+
+Chi phí spawn đo được thấp hơn khoảng ước lượng ở trên: một job rỗng qua `scope` tốn chừng **120
+nano giây** khi pool đang nóng, và 512 job rỗng trong một scope là 191 µs, tức chừng **370 nano
+giây một job**. Khoảng 1 tới 5 micro giây ở đầu mục vẫn đúng cho trường hợp xấu, khi job bị trộm
+sang core khác và kéo theo một cache line đi cùng, nhưng nó không phải con số thường gặp.
+
 Hai điều đi kèm:
 
-- **Không đoán được từ trên bàn.** Nó phụ thuộc máy, cache, và bản thân công việc. Nên nó là tham
-  số có default, và M4.2 sinh ra để đo lại.
+- **Không đoán được từ trên bàn.** Nó phụ thuộc máy, cache, và bản thân công việc. Bảng trên là số
+  của một máy, một tải; đổi máy thì đo lại, đó chính là việc `benches/pool.rs` và M4.2 sinh ra để
+  làm.
 - **Có cách bỏ hẳn tham số này, để sau.** Rayon dùng adaptive splitting: chia đôi, và chỉ chia tiếp
   khi thật sự có kẻ đến steal. Không ai rảnh thì không chia thêm. Đẹp hơn nhưng phức tạp hơn.
 

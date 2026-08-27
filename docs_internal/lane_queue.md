@@ -386,10 +386,17 @@ Cứ 61 vòng thì ép ngó lane queue trước, kể cả ring local đang đ�
 | p99 frame dựng đứng khi máy tải nặng | priority inversion ở mục 8.2 |
 | CPU 100% mà throughput thấp | thiếu chặn số searcher, mọi worker cùng hỏi lane queue |
 
-**Còn thiếu gì để nối vào**
+**Đã nối vào đâu**
 
-- `spill_half` đã có ở [`ring_buffer_fifo/owner.rs:251`](../src/ring_buffer_fifo/owner.rs), chưa
-  có ai gọi.
-- `ring_buffer_lifo` chưa có `spill_half` tương ứng.
-- `QueueBatching` cần bộ đếm len atomic và một quyết định về spinlock giữa các lane.
-- Vòng lặp worker, nơi mọi thứ ở trên được lắp lại, vẫn chưa tồn tại.
+- `spill_half` được [`pool::Shared::push_local`](../src/pool/mod.rs) gọi mỗi khi ring local đầy, và
+  `ring_buffer_lifo` giờ cũng có bản của riêng nó.
+- `LaneQueue` có bộ đếm độ dài đọc được không cần khoá, xem [`src/lane_queue.rs`](../src/lane_queue.rs).
+- Vòng lặp worker, nơi mọi thứ ở trên được lắp lại, nằm ở [`src/pool/mod.rs`](../src/pool/mod.rs).
+- Bộ đếm `lane_pops` và `spills` ([`src/pool/counters.rs`](../src/pool/counters.rs)) là chỗ nhìn ra
+  lane queue đang được dùng nhiều tới mức nào, và cũng là số liệu để quyết định có nên đổi sang bản
+  block lock-free hay không.
+
+**Còn để lại**
+
+- Bản danh sách block lock-free ở mục 7. Spinlock vẫn đứng được chừng nào mọi đường nóng còn chạm
+  khoá theo cụm, và hiện tại thì đúng như vậy.

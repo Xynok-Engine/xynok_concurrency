@@ -316,3 +316,104 @@ fn push_theo_lo_khong_bi_cache_cu_cat_ngan()
     assert!(vals.is_empty());
     assert_eq!(tx.push_iter(20..24u32), 0);
 }
+
+#[test]
+fn spill_half_nha_nua_cu_va_giu_nua_moi()
+{
+    let mut ring = RingBufferLifo::new(8);
+    let (mut tx, _) = ring.split();
+
+    assert_eq!(tx.push_iter(0..5u32), 5);
+
+    let mut out = Vec::new();
+    assert_eq!(tx.spill_half(&mut out), 3);
+    // Nửa cũ ra ngoài theo đúng thứ tự đẩy vào, để lane queue giữ được tính FIFO của nó.
+    assert_eq!(out, vec![0, 1, 2]);
+    assert_eq!(tx.available(), 2);
+
+    // Nửa mới ở lại, và chủ vẫn lấy chúng theo LIFO.
+    assert_eq!(tx.pop(), Some(4));
+    assert_eq!(tx.pop(), Some(3));
+    assert_eq!(tx.pop(), None);
+}
+
+#[test]
+fn spill_half_chua_lai_job_cuoi_cung_cho_chu()
+{
+    let mut ring = RingBufferLifo::new(8);
+    let (mut tx, _) = ring.split();
+
+    assert_eq!(tx.push(7u32), Ok(()));
+
+    let mut out = Vec::new();
+    assert_eq!(tx.spill_half(&mut out), 1);
+    assert_eq!(out, vec![7]);
+    assert!(tx.is_empty());
+
+    // Ring rỗng thì không có gì để xả, và cũng không được đụng vào ô nào.
+    assert_eq!(tx.spill_half(&mut out), 0);
+    assert_eq!(out, vec![7]);
+}
+
+#[test]
+fn spill_half_nhuong_duong_khi_ke_trom_dang_be()
+{
+    let mut ring = RingBufferLifo::new(8);
+    let (mut tx, rx) = ring.split();
+
+    assert_eq!(tx.push_iter(0..4u32), 4);
+
+    // Giành lấy một ô nhưng chưa nhả: `free != claim`, đúng cửa sổ mà kẻ trộm đang bê job đi.
+    let stolen = rx.steal();
+    assert_eq!(stolen, Some(0));
+
+    // Kẻ trộm đã nhả xong nên chủ xả được bình thường.
+    let mut out = Vec::new();
+    assert_eq!(tx.spill_half(&mut out), 2);
+    assert_eq!(out, vec![1, 2]);
+    assert_eq!(tx.available(), 1);
+}
+
+#[test]
+fn spill_half_roi_push_tiep_thi_ring_khong_con_day()
+{
+    let mut ring = RingBufferLifo::new(4);
+    let (mut tx, _) = ring.split();
+
+    assert_eq!(tx.push_iter(0..4u32), 4);
+    assert!(tx.is_full());
+    assert_eq!(tx.push(99), Err(99));
+
+    let mut out = Vec::new();
+    assert_eq!(tx.spill_half(&mut out), 2);
+    assert_eq!(out, vec![0, 1]);
+
+    // Đây là toàn bộ lý do `spill_half` tồn tại: biên cứng của ring thành ngưỡng xả.
+    assert_eq!(tx.push(99), Ok(()));
+    assert_eq!(tx.pop(), Some(99));
+    assert_eq!(tx.pop(), Some(3));
+    assert_eq!(tx.pop(), Some(2));
+    assert_eq!(tx.pop(), None);
+}
+
+#[test]
+fn spill_half_quan_qua_cuoi_mang_van_dung_thu_tu()
+{
+    let mut ring = RingBufferLifo::new(4);
+    let (mut tx, _) = ring.split();
+
+    // Đẩy chỉ số chạy gần hết một vòng trước khi kiểm tra.
+    for _ in 0..3
+    {
+        assert_eq!(tx.push_iter(0..4u32), 4);
+        let mut sink = Vec::new();
+        assert_eq!(tx.drain(&mut sink), 4);
+    }
+
+    assert_eq!(tx.push_iter(10..14u32), 4);
+    let mut out = Vec::new();
+    assert_eq!(tx.spill_half(&mut out), 2);
+    assert_eq!(out, vec![10, 11]);
+    assert_eq!(tx.pop(), Some(13));
+    assert_eq!(tx.pop(), Some(12));
+}

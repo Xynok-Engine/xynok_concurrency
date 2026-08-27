@@ -227,6 +227,87 @@ impl<'a, T> Producer<'a, T>
         self.pop_batch_with(max, |val| out.push(val))
     }
 
+    /// Xả nửa cũ của ring xuống `out`, giữ lại nửa mới cho chủ.
+    ///
+    /// Đây là cửa thoát khi ring đầy: thay vì để `push` trả `Err`, chủ đẩy phần cũ sang lane queue
+    /// rồi push tiếp. Nửa cũ đi chứ không phải nửa mới, vì với LIFO thì job mới nhất là job nóng
+    /// nhất trong cache của chính chủ, còn job cũ nằm ở đáy có thể đã nguội và ai chạy cũng như
+    /// nhau.
+    ///
+    /// # Vì sao chủ bốc được cả lô còn kẻ trộm thì không
+    ///
+    /// Ràng buộc `n = 1` ở [`Consumer::try_steal`](super::thief::Consumer::try_steal) sinh ra từ
+    /// việc kẻ trộm chỉ có một bản chụp `bottom` đã cũ, nên vùng nó nhận có thể trùm qua đúng ô mà
+    /// chủ đang `pop` (xem mục 4 của `docs_internal/ring-buffer-lifo.md`). Ở đây người bốc lô
+    /// **chính là** chủ: `bottom` không thể đổi dưới lưng nó, và không có `pop` nào chạy song song
+    /// vì `pop` cũng đòi `&mut self`. Kẽ hở đó không tồn tại, nên lấy `n` ô một lượt là an toàn.
+    ///
+    /// Trả `0` khi ring rỗng, hoặc khi có kẻ trộm đang giữ một ô (`free != claim`). Trường hợp sau
+    /// không phải lỗi: kẻ trộm sắp lấy bớt việc đi, gọi lại một nhịp nữa là xong.
+    pub fn spill_half(&mut self, out: &mut Vec<T>) -> usize
+    {
+        // Chủ là người duy nhất ghi `bottom`, nên `Relaxed` là đủ và giá trị này không cũ đi được.
+        let bottom = self.ring.bottom.load(Ordering::Relaxed);
+        let mut head = self.ring.top.load(Ordering::SeqCst);
+
+        let (start, n) = loop
+        {
+            let (free, claim) = unpack(head);
+            self.free.set(free);
+
+            if free != claim
+            {
+                return 0;
+            }
+
+            let size = bottom.wrapping_sub(claim) as i32;
+            if size <= 0
+            {
+                return 0;
+            }
+
+            // Làm tròn lên: còn đúng một job thì job đó ở lại với chủ, không xả đi.
+            let size = size as u32;
+            let n = size - size / 2;
+            let next = claim.wrapping_add(n);
+
+            match self.ring.top.compare_exchange_weak(head, pack(claim, next), Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break (claim, n),
+                Err(actual) => head = actual,
+            }
+        };
+
+        out.reserve(n as usize);
+        for offset in 0..n
+        {
+            out.push(unsafe { self.ring.slots.read(start.wrapping_add(offset)) });
+        }
+
+        // Nhả vùng đã đọc xong: `free` đuổi kịp `claim`. Trong lúc mình giữ, không kẻ trộm nào
+        // claim thêm được (họ thấy `free != claim` và bỏ đi), nên `claim` đọc lại ở đây vẫn là cái
+        // mình vừa đặt.
+        let mut head = self.ring.top.load(Ordering::SeqCst);
+        loop
+        {
+            let (_, claim) = unpack(head);
+            match self
+                .ring
+                .top
+                .compare_exchange_weak(head, pack(claim, claim), Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) =>
+                {
+                    self.free.set(claim);
+                    break;
+                }
+                Err(actual) => head = actual,
+            }
+        }
+
+        n as usize
+    }
+
     #[inline]
     pub fn drain(&mut self, out: &mut Vec<T>) -> usize
     {

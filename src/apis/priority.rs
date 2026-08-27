@@ -1,5 +1,19 @@
+//! Standing mà một thread xin OS: thread của frame cần được chạy trước, thread IO thì nên nhường.
 //!
-//! TODO: This currently only supports macOS. I need to implement support for Windows and Linux to ensure accurate measurements.
+//! Ba nền tảng, ba API hoàn toàn khác nhau, và không cái nào nhận một thread khác làm đối tượng:
+//! tất cả đều đặt cho **thread đang gọi**. Nên [`Priority::apply_to_current_thread`] phải được gọi
+//! từ chính worker, không phải từ thread đã spawn nó ra.
+//!
+//! | nền tảng | dùng gì | lý do |
+//! |---|---|---|
+//! | macOS, iOS | QoS class | nền tảng duy nhất mà lịch trình thật sự nhìn vào nó, và trên máy có core P/E thì đây là thứ quyết định thread chạy trên loại core nào |
+//! | Linux, BSD | `nice` | tác động lên chính task đang gọi, vì trên Linux thread là task |
+//! | Windows | `SetThreadPriority`, cộng `THREAD_POWER_THROTTLING` | riêng cái sau mới là thứ bật hoặc tắt EcoQoS, tức là dọn thread xuống core tiết kiệm điện |
+//!
+//! Còn thiếu, và cố ý để sau: util clamp trên Linux (`sched_setattr`) để nói với governor rằng
+//! thread frame cần tần số cao. Nó là một syscall thô, số hiệu khác nhau theo kiến trúc, và nó chỉ
+//! đáng làm khi đã có số đo cho thấy governor đang hạ tần số nhầm chỗ.
+//!
 //! ## References
 //!
 //! - <https://developer.apple.com/news/?id=vk3m204o>
@@ -95,19 +109,56 @@ fn apply(level: Level)
     const THREAD_PRIORITY_ABOVE_NORMAL: i32 = 1;
     const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
 
+    /// `ThreadPowerThrottling` trong `THREAD_INFORMATION_CLASS`.
+    const THREAD_POWER_THROTTLING: i32 = 4;
+    const THREAD_POWER_THROTTLING_CURRENT_VERSION: u32 = 1;
+    /// Bit duy nhất hiện có: cho phép hệ điều hành hạ tốc độ thực thi của thread này.
+    const THREAD_POWER_THROTTLING_EXECUTION_SPEED: u32 = 0x1;
+
+    #[repr(C)]
+    struct ThreadPowerThrottlingState
+    {
+        version:      u32,
+        /// Bit nào trong `state_mask` là có ý nghĩa.
+        control_mask: u32,
+        /// Bật hay tắt từng bit đó.
+        state_mask:   u32,
+    }
+
     unsafe extern "system" {
         fn GetCurrentThread() -> isize;
         fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+        fn SetThreadInformation(thread: isize, information_class: i32, information: *const core::ffi::c_void, size: u32) -> i32;
     }
 
-    let priority = match level
+    let (priority, throttling) = match level
     {
-        Level::Interactive => THREAD_PRIORITY_ABOVE_NORMAL,
-        Level::Low => THREAD_PRIORITY_BELOW_NORMAL,
+        // Thread frame: xin chạy trước, và **tắt** EcoQoS. Không tắt thì trên máy có core hiệu năng
+        // và core tiết kiệm điện, Windows có thể dọn cả pool xuống nhóm core chậm, và một frame
+        // budget 16 ms thì không chịu nổi chuyện đó.
+        Level::Interactive => (THREAD_PRIORITY_ABOVE_NORMAL, 0),
+        // Thread IO: nhường đường, và bật EcoQoS. Thời gian của nó nằm trong syscall, nên chạy trên
+        // core chậm gần như không đổi gì, mà pin thì đỡ hẳn.
+        Level::Low => (THREAD_PRIORITY_BELOW_NORMAL, THREAD_POWER_THROTTLING_EXECUTION_SPEED),
+    };
+
+    let state = ThreadPowerThrottlingState {
+        version:      THREAD_POWER_THROTTLING_CURRENT_VERSION,
+        control_mask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+        state_mask:   throttling,
     };
 
     unsafe {
-        let _ = SetThreadPriority(GetCurrentThread(), priority);
+        let thread = GetCurrentThread();
+        let _ = SetThreadPriority(thread, priority);
+        // Windows 10 1809 trở lên mới có. Bản cũ hơn trả lỗi, và bỏ qua là đúng: mất một tinh chỉnh
+        // về điện năng thì không đáng để từ chối chạy.
+        let _ = SetThreadInformation(
+            thread,
+            THREAD_POWER_THROTTLING,
+            (&raw const state).cast::<core::ffi::c_void>(),
+            size_of::<ThreadPowerThrottlingState>() as u32,
+        );
     }
 }
 

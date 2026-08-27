@@ -1,6 +1,6 @@
 [package]
 name = "xynok_concurrency"
-version = "0.1.29"
+version = "0.1.30"
 edition = "2024"
 
 
@@ -25,3 +25,7 @@ loom = "0.7"
 
 [dev-dependencies]
 divan = "0.1.21"
+
+[[bench]]
+name = "pool"
+harness = false

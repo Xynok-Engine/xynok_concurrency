@@ -60,6 +60,46 @@ impl InlineFn
             fn_buffer: UnsafeCell::new(f_box),
         }
     }
+    /// Như [`Self::new`] nhưng nhận cả closure **không** `'static`.
+    ///
+    /// Dành cho [`Scope`](crate::scope::Scope): job của một scope mượn stack của người mở scope,
+    /// nên nó không thể `'static`, mà không có hàm này thì đường duy nhất là bọc closure vào một
+    /// `Box<dyn FnOnce() + Send + 'scope>` rồi xoá lifetime của cái box đó. Cách ấy đúng, và tốn
+    /// một lần cấp phát cho mỗi job spawn trong scope, tức là đúng cái mà `InlineFn` sinh ra để
+    /// tránh.
+    ///
+    /// # Safety
+    ///
+    /// Người gọi phải bảo đảm job này chạy xong **trước khi** bất cứ thứ gì closure mượn bị thả.
+    /// `Scope` bảo đảm điều đó bằng cách không trả về cho tới khi mọi job của nó báo xong, kể cả
+    /// khi đang unwind vì panic. Không có bảo đảm đó thì đây là một use-after-free đợi sẵn.
+    #[inline]
+    pub unsafe fn new_unbound<F>(f: F) -> Self
+    where F: FnOnce() + Send
+    {
+        let mut f_box = FnBuffer::new();
+
+        let v_table = unsafe {
+            match Self::is_fit::<F>()
+            {
+                true =>
+                {
+                    f_box.as_mut_ptr().cast::<F>().write(f);
+                    UnboundVTable::<F>::INLINE
+                }
+                false =>
+                {
+                    f_box.as_mut_ptr().cast::<Box<F>>().write(Box::new(f));
+                    UnboundVTable::<F>::BOXED
+                }
+            }
+        };
+        Self {
+            vtable:    v_table,
+            fn_buffer: UnsafeCell::new(f_box),
+        }
+    }
+
     #[inline]
     pub fn run_once(self)
     {
@@ -121,6 +161,49 @@ impl<F: Runnable> VTableAlias<F>
         }
     }
 }
+/// Bản sao của [`VTableAlias`] cho closure không `'static`.
+///
+/// Phải là một type riêng vì `VTableAlias<F>` đòi `F: Runnable`, mà `Runnable` gói sẵn `'static`
+/// vào. Bốn hàm bên dưới không hề chạm tới lifetime của `F`: chúng chỉ đọc, gọi, và thả một giá
+/// trị nằm trong buffer, nên chúng hợp lệ với `F` có lifetime bất kỳ. Cái phải bảo đảm bằng tay là
+/// job chạy xong trước khi thứ nó mượn biến mất, và đó là hợp đồng của
+/// [`InlineFn::new_unbound`].
+struct UnboundVTable<F>(PhantomData<F>);
+
+impl<F: FnOnce() + Send> UnboundVTable<F>
+{
+    const INLINE: &'static VTable = &VTable {
+        runner:  Self::run_inline,
+        dropper: Self::drop_inline,
+    };
+    const BOXED: &'static VTable = &VTable {
+        runner:  Self::run_boxed,
+        dropper: Self::drop_boxed,
+    };
+    fn run_inline(f_box: *mut FnBuffer)
+    {
+        let f = unsafe { f_box.cast::<F>().read() };
+        f();
+    }
+    fn drop_inline(f_box: *mut FnBuffer)
+    {
+        unsafe {
+            f_box.cast::<F>().drop_in_place();
+        }
+    }
+    fn run_boxed(f_box: *mut FnBuffer)
+    {
+        let f = unsafe { f_box.cast::<Box<F>>().read() };
+        f();
+    }
+    fn drop_boxed(f_box: *mut FnBuffer)
+    {
+        unsafe {
+            f_box.cast::<Box<F>>().drop_in_place();
+        }
+    }
+}
+
 impl FnBuffer
 {
     #[inline]

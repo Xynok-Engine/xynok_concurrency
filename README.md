@@ -4,15 +4,64 @@
 
 This repo stores the tools, utilities, and data types that allow Xynok Engine to handle multi-threading and asynchronous tasks.
 
-- `src/ring_buffer_fifo/`: bounded lock-free work-stealing ring buffer, batch steal — see [docs/ring-buffer-fifo.md](docs/ring-buffer-fifo.md)
-- `src/ring_buffer_lifo/`: bounded Chase-Lev work-stealing deque, LIFO for the owner — see [docs/ring-buffer-lifo.md](docs/ring-buffer-lifo.md)
-- `src/lane_queue.rs`: the lane-wide queue every non-worker pushes into, batch handoff into a local ring
-- `src/utils/`: cache padding, backoff, spin lock, park/unpark waker, inline closures
+## What is in here
+
+**The lanes**, which is where you start:
+
+- `src/lanes.rs`: the lane registry. A compute pool for CPU-bound frame work, a small blocking pool for anything that sits in a syscall, and a queue only the main thread drains.
+- `src/pool/`: the work-stealing pool itself, one ring per participant, plus the sleep protocol that lets a worker go to sleep without missing a job.
+
+**Building on the pool:**
+
+- `src/scope.rs`: `scope`, `join`, `parallel_for`, `par_reduce`. A job inside a scope may borrow the caller's stack, and the thread waiting at the join runs other jobs instead of idling.
+- `src/job_graph.rs`: `spawn_after(deps)`, so a frame is a dependency graph rather than a chain of barriers.
+- `src/latch.rs`: the countdown every join point is built from.
+- `src/per_worker.rs`: one slot per thread, so results are written without sharing and merged in index order.
+- `src/bump.rs`: a per-worker scratch arena where allocating is a pointer bump.
+- `src/channel.rs`: a one-shot channel, for a job that has to hand a value back.
+- `src/profile.rs`, `src/pool/counters.rs`: what the pool itself is doing, since none of it is visible from outside.
+
+**The queues underneath:**
+
+- `src/ring_buffer_fifo/`: bounded lock-free work-stealing ring buffer, batch steal. See [docs/ring_buffer.md](docs/ring_buffer.md).
+- `src/ring_buffer_lifo/`: bounded Chase-Lev work-stealing deque, LIFO for the owner.
+- `src/ring_buffer_spsc/`: one writer, one reader, wait-free on both ends. This is how the audio thread receives commands without ever taking a lock or allocating.
+- `src/lane_queue.rs`: the lane-wide queue every non-worker pushes into, with a batch handoff into a local ring. See [docs/lane_queue.md](docs/lane_queue.md).
+- `src/utils/`: cache padding, backoff, spin lock, park/unpark waker, inline closures.
+
+## Getting started
+
+```rust
+use xynok_concurrency::lanes::{LaneId, Lanes, LanesConfig};
+
+let lanes = Lanes::new(LanesConfig::default());
+
+// CPU-bound frame work, split across every core
+lanes.compute().parallel_for(10_000, 64, |i| {
+    let _ = i * i;
+});
+
+// Something that sits in a syscall goes to its own lane, and answers through a channel
+let loading = lanes.run_blocking(|| std::fs::read("scene.pak").ok());
+
+// Waiting runs other jobs rather than idling
+let scene = loading.recv_in(lanes.compute());
+
+// Work that has to happen on the main thread, drained at a fixed point in the frame
+lanes.spawn_on_main(|| { /* present, window API, whatever the driver pins */ });
+lanes.run_pending_on_main();
+
+lanes.end_frame(); // every scratch arena is empty again
+```
+
+Set `XYNOK_LANE_THREADS=1` and every job runs inline on the calling thread, which answers
+"is this bug caused by parallelism" in one run without touching any code.
 
 ## Design docs
 
-- [docs/lane_queue.md](docs/lane_queue.md): the per-lane queue that sits next to the per-worker rings, why it exists, and what still needs wiring up
-- [docs/lanes.md](docs/lanes.md): how the engine's lanes fit together across a frame, and the plan for `xynok_concurrency` and `xynok_ecs` that gets there
+- [docs/lane_queue.md](docs/lane_queue.md): the per-lane queue that sits next to the per-worker rings, and why it exists.
+- [docs/ring_buffer.md](docs/ring_buffer.md): the work-stealing ring buffers underneath.
+- [docs/thread_priority.md](docs/thread_priority.md): how OS scheduling, thread priority, QoS, nice, and EcoQoS protect frame work from background work.
 
 ## Examples
 
@@ -21,11 +70,16 @@ To run an example, use the following command:
 ```bash
 cargo run --release --example <example_name>
 cargo run --release --example bench_spin      # This runs `examples/bench_spin.rs`
+cargo run --release --example frame           # A frame's worth of lane traffic, end to end
 ```
 
 ## Tests
 
 **`loom` test**
+
+Loom runs every interleaving of a small model, which is the only way to be sure about the sleep
+protocol: a bug there does not crash, it just quietly stops a thread forever.
+
 ```bash
 LOOM_LOCATION=1 RUSTFLAGS="--cfg loom" cargo test --lib
 ```
@@ -47,5 +101,3 @@ Each run explores one fixed interleaving. To sweep several:
 ```bash
 MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo miri test --lib
 ```
-
-
