@@ -371,6 +371,11 @@ impl<'scope> Scope<'scope>
             {
                 inner.spawn(run);
             }
+            // `spawn` đã gọi `notify` cho từng job rồi, nhưng `notify` im ngay khi thấy có người
+            // đang lùng việc, nên cả đợt này chỉ đánh thức đúng một người và những người sau phải
+            // chờ dây chuyền. Ở đây thì biết chắc có `helpers` phần việc rời nhau, nên gọi thẳng
+            // đủ người. Xem `Sleep::notify_many`.
+            inner.shared.wake_many(helpers);
             run();
         });
     }
@@ -456,6 +461,8 @@ impl<'scope> Scope<'scope>
             {
                 inner.spawn(run);
             }
+            // Cùng lý do như `parallel_for`.
+            inner.shared.wake_many(helpers);
             run();
         });
 

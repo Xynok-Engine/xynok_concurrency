@@ -241,3 +241,46 @@ fn notify_all_khong_bo_sot_ai()
         handle.join().unwrap();
     });
 }
+
+/// `notify_many` gọi cả một đợt dậy, không chỉ một người.
+///
+/// Hai job đẩy ra cùng một lúc, hai worker đang trên đường đi ngủ. Với [`Sleep::notify`] thì người
+/// thứ hai phải chờ người thứ nhất tỉnh rồi gọi hộ, và cái dây chuyền đó là thứ `notify_many` sinh
+/// ra để cắt. Nhưng nó chạm cùng ô `state` như mọi phía khác, nên thứ đáng kiểm ở đây không phải là
+/// nó nhanh hơn: là nó không mở lại kẽ hở mất wake-up mà `notify` đã bịt.
+#[test]
+fn notify_many_khong_bo_sot_ai()
+{
+    // Hai worker cùng ngủ rồi cùng được gọi dậy là mô hình lớn nhất trong file này, và để loom chạy
+    // hết mọi interleaving của nó thì phải tính bằng giờ. Chặn số lần cắt ngang lại là cách loom
+    // khuyến nghị cho đúng cảnh này: lỗi đồng bộ thật gần như luôn hiện ra trong vài lần cắt đầu
+    // tiên, còn phần đuôi chỉ là những hoán vị dài mà không thêm hình dạng mới nào.
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(3);
+    model.check(|| {
+        let sleep = Arc::new(Sleep::new(2));
+        let work = Arc::new(Work::new());
+
+        let handles: Vec<_> = (0..2)
+            .map(|index| {
+                let sleep = Arc::clone(&sleep);
+                let work = Arc::clone(&work);
+                thread::spawn(move || {
+                    assert!(worker(&sleep, &work, index), "worker {index} về tay không dù còn job");
+                })
+            })
+            .collect();
+
+        // Đẩy cả đợt rồi mới gọi, đúng thứ tự của `Scope::parallel_for`: job phải có mặt trước, nếu
+        // không thì người được gọi dậy sẽ tìm hụt rồi ngủ lại.
+        work.push();
+        work.push();
+        sleep.notify_many(2);
+
+        for handle in handles
+        {
+            handle.join().unwrap();
+        }
+        assert_eq!(work.taken.load(Ordering::Acquire), 2);
+    });
+}

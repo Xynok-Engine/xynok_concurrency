@@ -166,6 +166,81 @@ impl Sleep
         self.unpark_one();
     }
 
+    /// Có `n` job mới cùng lúc. Đánh thức tối đa `n` người.
+    ///
+    /// [`Self::notify`] được viết cho "vừa có **một** job": thấy đã có người đi lùng việc là nó im,
+    /// vì một job thì một người tìm là đủ, và gọi thêm chỉ tổ có hai người tranh nhau. Một đợt
+    /// fan-out thì ngược hẳn. Ở đó người gọi biết chắc mình vừa đẩy ra `n` phần việc rời nhau, và
+    /// im lặng nghĩa là chúng được phát theo dây chuyền: người thứ nhất tỉnh, vớ một job, gọi người
+    /// thứ hai, người thứ hai tỉnh, vớ một job, gọi người thứ ba. Mỗi bậc là một cặp syscall cộng
+    /// một lần chuyển ngữ cảnh, và cả cái dây chuyền nằm thẳng trên đường tới hạn của lời gọi
+    /// `parallel_for` đang chờ.
+    ///
+    /// Người đang lùng việc vẫn được trừ đi: họ sẽ tự vấp phải một phần của đợt này mà không cần ai
+    /// gọi.
+    pub(crate) fn notify_many(&self, n: usize)
+    {
+        if self.workers == 0
+        {
+            return;
+        }
+        if n <= 1
+        {
+            return self.notify();
+        }
+
+        // RMW trước rồi mới đọc, đúng như `notify`. Xem đầu file về vì sao chỗ này không được là
+        // một `load`.
+        let previous = self.state.fetch_add(ONE_EVENT, Ordering::AcqRel);
+        let (_, searching, unparked) = split(previous);
+
+        if unparked as usize >= self.workers
+        {
+            return;
+        }
+
+        let want = n.saturating_sub(searching as usize);
+        if want == 0
+        {
+            return;
+        }
+
+        // Cấp chỗ trước khi cầm khoá, để phần việc dưới khoá chỉ còn là chuyển mấy phần tử.
+        let mut taken: Vec<(usize, Thread)> = Vec::with_capacity(want.min(self.workers));
+
+        {
+            let mut sleepers = ignore_poison(self.sleepers.lock());
+            let woken = sleepers.len().min(want);
+            if woken == 0
+            {
+                return;
+            }
+
+            // Tính cả nhóm vào `searching` và `unparked` ngay tại đây, cùng một RMW, y như
+            // `unpark_one` làm với một người. Đợi họ tỉnh mới cộng thì trong khoảng giữa những con
+            // số này nói dối, và job đẩy vào lúc đó sẽ gọi dậy thêm người nữa cho một đợt đã đủ
+            // người.
+            self.state.fetch_add((ONE_SEARCHING + ONE_UNPARKED) * woken as u64, Ordering::AcqRel);
+
+            // Người ngủ sau cùng được gọi trước, cache của họ còn nóng nhất. Đó cũng là thứ tự
+            // `unpark_one` lấy ra bằng `pop`.
+            let start = sleepers.len() - woken;
+            taken.extend(sleepers.drain(start..));
+            for (index, _) in &taken
+            {
+                self.parkers[*index].store(NOTIFIED, Ordering::Release);
+            }
+        }
+
+        // Thả khoá rồi mới gọi, y như `unpark_one`. Gọi trong lúc còn cầm khoá thì người vừa tỉnh
+        // có thể quay lại xin đúng cái khoá đó ở [`Self::unregister`] và chờ chính kẻ đang đánh
+        // thức mình. Loom dựng lại được cảnh đó ngay ở mô hình hai worker.
+        for (_, thread) in taken
+        {
+            thread.unpark();
+        }
+    }
+
     /// Gọi cả pool dậy. Dùng lúc shutdown, và lúc có thứ mà **mọi** worker phải nhìn lại.
     ///
     /// # Vì sao bộ đếm sự kiện vẫn phải nhích khi không có ai đang ngủ

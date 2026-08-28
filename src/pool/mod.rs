@@ -135,11 +135,18 @@ pub struct Config
     pub ring_capacity: usize,
     /// Số byte arena nháp cho **mỗi** người tham gia. Xem [`ThreadPool::scratch`].
     pub scratch_bytes: usize,
-    /// Bao nhiêu vòng quay và nhường CPU trước khi một worker chịu đi ngủ.
+    /// Bao nhiêu vòng tìm việc hụt trước khi một worker chịu đi ngủ.
     ///
-    /// Đánh thức một thread đang park tốn một cặp syscall cộng một lần chuyển ngữ cảnh. Pool nào
-    /// ngủ quá nhanh thì trả cái giá đó ở mỗi đợt việc mới. Ngược lại, giữ nó cao thì một máy đang
-    /// rảnh vẫn có core quay tại chỗ.
+    /// Đánh thức một thread đang park tốn một cặp syscall cộng một lần chuyển ngữ cảnh, và trên
+    /// máy có core P và core E thì còn tốn hơn thế: thread vừa dậy không chắc quay lại đúng loại
+    /// core nó vừa rời. Pool nào ngủ quá nhanh thì trả cái giá đó ở mỗi đợt việc mới. Ngược lại,
+    /// giữ nó cao thì một máy đang rảnh vẫn có core quay tại chỗ.
+    ///
+    /// Đơn vị là **vòng của vòng lặp worker**, không phải bậc backoff. Hai thứ đó từng bị lẫn với
+    /// nhau ở đây: [`Backoff`] chặn bậc của nó ở [`YIELD_LIMIT`](crate::apis::consts::YIELD_LIMIT)
+    /// cộng một, nên hồi so với bậc thì mọi giá trị lớn hơn 11 đều có đúng một nghĩa, là "không bao
+    /// giờ ngủ". `lanes` và `task` đặt `1` nên chúng vẫn chạy đúng như trước; con số mặc định thì
+    /// không, và [`Config::default`] nói nó được chọn lại thế nào.
     pub spin_rounds:   u32,
     /// Tiền tố tên thread, để nhìn ra chúng trong debugger hoặc profiler.
     pub thread_name:   String,
@@ -154,13 +161,28 @@ impl Default for Config
     /// `available_parallelism` đếm core **logic**, nên trên x86 có siêu phân luồng thì đây là đếm
     /// dư. Với việc nặng bộ nhớ, thread thứ hai trên cùng một core gần như không mua được gì. Chỗ
     /// này đáng chỉnh lại theo từng nền tảng khi đã có số đo, chứ đoán ở đây thì tệ hơn.
+    ///
+    /// # Vì sao `spin_rounds` lớn đến vậy
+    ///
+    /// Vì đo ra thế, và vì con số cũ chưa bao giờ là một lựa chọn. Nó là `40` khi điều kiện đi ngủ
+    /// còn so với bậc backoff, mà bậc đó bão hoà ở 11, nên `40` có nghĩa là worker không bao giờ
+    /// ngủ. Sửa lại cách đếm mà giữ nguyên `40` thì hoá ra là đổi mặc định từ "không bao giờ ngủ"
+    /// sang "ngủ sau ~40 vòng", và đó là một thay đổi hiệu năng chứ không phải một bản vá: một pass
+    /// 1M entity trên 3 worker chậm đi 21%, từ 188 xuống 227 micro giây, đo xen kẽ với bevy để
+    /// chắc không phải máy đang trôi.
+    ///
+    /// `2048` giữ lại cái mà con số cũ vô tình mua được, mà không phải trả bằng "vĩnh viễn": mỗi
+    /// vòng hụt tốn cỡ 150 tới 200 nano giây, nên nó là khoảng ba tới bốn trăm micro giây quay tại
+    /// chỗ. Đủ dài để một worker còn nóng khi hệ thống kế tiếp trong cùng một frame đẩy việc ra,
+    /// đủ ngắn để giữa hai frame, hoặc lúc app dừng, core được trả lại thay vì quay không tới hết
+    /// đời tiến trình.
     fn default() -> Self
     {
         Self {
             threads:       available_cores().saturating_sub(1),
             ring_capacity: 256,
             scratch_bytes: 1 << 20,
-            spin_rounds:   40,
+            spin_rounds:   2048,
             thread_name:   "xynok-worker".to_string(),
             priority:      Priority::Frame,
         }
@@ -701,6 +723,14 @@ impl Shared
         self.sleep.notify();
     }
 
+    /// Đánh thức tối đa `n` người đang ngủ, cho một đợt spawn biết trước mình có bao nhiêu phần
+    /// việc. Xem [`Sleep::notify_many`].
+    #[inline]
+    pub(crate) fn wake_many(&self, n: usize)
+    {
+        self.sleep.notify_many(n);
+    }
+
     /// Đẩy vào ring của người tham gia `index`, xả nửa cũ xuống lane queue nếu ring đã đầy.
     ///
     /// Chỉ gọi từ chính chủ của `index`.
@@ -982,6 +1012,9 @@ fn worker_loop(shared: Arc<Shared>, index: usize)
     let mut tick = 0u32;
     let mut is_searching = false;
     let mut backoff = Backoff::new();
+    // Đếm riêng, không dùng bậc của `backoff`: bậc đó bão hoà, còn cái này thì không. Xem
+    // [`Config::spin_rounds`].
+    let mut idle_rounds = 0u32;
 
     loop
     {
@@ -1005,6 +1038,7 @@ fn worker_loop(shared: Arc<Shared>, index: usize)
                 }
             }
             backoff.reset();
+            idle_rounds = 0;
             run_in_loop(&shared, index, job);
             continue;
         }
@@ -1029,11 +1063,13 @@ fn worker_loop(shared: Arc<Shared>, index: usize)
                 shared.sleep.notify();
             }
             backoff.reset();
+            idle_rounds = 0;
             run_in_loop(&shared, index, job);
             continue;
         }
 
-        if backoff.rounds() < shared.spin_rounds
+        idle_rounds = idle_rounds.saturating_add(1);
+        if idle_rounds < shared.spin_rounds
         {
             backoff.snooze();
             continue;
@@ -1064,6 +1100,7 @@ fn worker_loop(shared: Arc<Shared>, index: usize)
             Wake::Cancelled => is_searching = false,
         }
         backoff.reset();
+        idle_rounds = 0;
     }
 
     // Không ai trộm được ô LIFO, nên thread này không được mang nó xuống mồ.

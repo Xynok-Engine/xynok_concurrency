@@ -17,3 +17,5 @@ pub mod channel;
 pub mod task;
 pub mod lanes;
 pub mod profile;
+pub mod collection;
+pub mod worker_pool;
