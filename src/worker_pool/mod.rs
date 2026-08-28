@@ -2,6 +2,7 @@ use crate::sync::thread;
 use crate::utils::available_cores;
 use crate::utils::inline_fn::InlineFn;
 use crate::worker_pool::cfg::CfgWorkerPool;
+use crate::worker_pool::leader::Leader;
 use crate::worker_pool::worker::Worker;
 use xynok_std::collection::Queue;
 
@@ -15,7 +16,7 @@ pub(crate) mod thread_meta;
 pub struct WorkerPool
 {
     cfg:     CfgWorkerPool,
-    leader:  Worker,
+    leader:  Leader,
     workers: Vec<Worker>,
     tasks:   Queue<InlineFn>,
 }
@@ -31,7 +32,7 @@ impl WorkerPool
             cfg.per_worker_task_capacity = cfg.per_worker_task_capacity.next_power_of_two().max(2);
         }
 
-        let leader = create_a_worker(format!("{}.leader", cfg.name).as_str(), &cfg);
+        let leader = create_a_leader(format!("{}.leader", cfg.name).as_str(), &cfg);
         let tasks = Queue::with_capacity(cfg.task_capacity);
         let workers_count = cfg.worker_capacity - 1;
         let mut workers = Vec::with_capacity(workers_count);
@@ -46,6 +47,34 @@ impl WorkerPool
             workers,
         }
     }
+    pub fn push(&mut self, task: InlineFn)
+    {
+        match self.leader.push(task)
+        {
+            Ok(_) =>
+            {}
+            Err(t) =>
+            {
+                self.tasks.enqueue(t);
+            }
+        }
+    }
+}
+fn create_a_leader(name: &str, cfg: &CfgWorkerPool) -> Leader
+{
+    let handle = match crate::sync::thread::spawn_named(name.to_string(), move || {
+        loop
+        {
+            println!("{}: looping !", thread::current().name().unwrap_or("<khong ten>"));
+            thread::park_timeout(std::time::Duration::from_millis(300));
+        }
+    })
+    {
+        Ok(r) => r,
+
+        Err(e) => panic!("Failed to create worker `{}`: {}", name, e),
+    };
+    Leader::new(handle, cfg.per_worker_task_capacity)
 }
 fn create_a_worker(name: &str, cfg: &CfgWorkerPool) -> Worker
 {

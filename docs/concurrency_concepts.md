@@ -4,6 +4,7 @@ excerpt: Key concepts and keywords to keep in mind when working with multithread
 cover img: https://preview.redd.it/parallelism-be-like-v0-9tu18n684z331.jpg?auto=webp&s=251119eba2b3b80b982934c71919990a77f7236c
 tags:
   - addendum
+  - concurrency
 ---
 
 ## Preface
