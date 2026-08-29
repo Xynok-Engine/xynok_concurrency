@@ -50,7 +50,7 @@ impl<T> FixedBuffer<T>
     }
 
     #[inline]
-    pub unsafe fn read(&self, cursor: u32) -> T
+    pub unsafe fn take_at(&self, cursor: u32) -> T
     {
         self.at(cursor).with(|p| unsafe { (*p).assume_init_read() })
     }

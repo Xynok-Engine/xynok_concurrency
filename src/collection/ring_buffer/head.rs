@@ -37,6 +37,12 @@ impl Head
     {
         self.packed.store(val, order);
     }
+
+    #[inline]
+    pub fn compare_exchange_weak(&self, current: u64, new: u64, success: Ordering, fail: Ordering) -> Result<u64, u64>
+    {
+        self.packed.compare_exchange_weak(current, new, success, fail)
+    }
 }
 
 impl Debug for Head
