@@ -2,9 +2,10 @@ use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::collection::ring_buffer::cursors::CursorData;
 use crate::collection::ring_buffer::fixed_buffer::FixedBuffer;
 use crate::collection::ring_buffer::head::Head;
-use crate::collection::ring_buffer::params::{ParamsCasForPopBatch, ParamsCasTailForPushBatch};
+use crate::collection::ring_buffer::params::ParamsCasForPopBatch;
 use crate::sync::AtomicU32;
 use crate::sync::Ordering::{Acquire, Relaxed, Release};
+use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::{pack, unpack};
 
@@ -45,20 +46,15 @@ impl<T> SpmcRingBufferFifo<T>
         }
     }
 
+    // There is only ever one producer, so `tail` has no contention: no CAS is needed here, just a
+    // plain load and a plain store. What matters is the order: write the data first, publish the
+    // new `tail` (Release) after, so an consumer that observes the new `tail` (Acquire, see
+    // `cursor_data`) is guaranteed to also observe the write that just happened.
     #[inline]
     pub fn push(&mut self, val: T) -> Result<(), T>
     {
-        let mut cursors = self.cursor_data();
-
-        let cas_params = ParamsCasTailForPushBatch {
-            cursor_data:      &mut cursors,
-            src_amount:       1,
-            push_amount:      1,
-            success_order:    Release,
-            fail_order:       Acquire,
-            fetch_head_order: Relaxed,
-        };
-        if self.try_cas_tail_for_push(cas_params).is_none()
+        let cursors = self.cursor_data();
+        if cursors.available_slots() < 1
         {
             return Err(val);
         }
@@ -67,6 +63,7 @@ impl<T> SpmcRingBufferFifo<T>
             self.buffer.write(cursors.tail, val);
         }
 
+        self.tail.store(cursors.tail.wrapping_add(1), Release);
         Ok(())
     }
 
@@ -77,21 +74,14 @@ impl<T> SpmcRingBufferFifo<T>
     pub fn push_batch(&mut self, max: usize, vals: &mut Vec<T>) -> usize
     {
         debug_assert!(max > 0, "The push batch size must be greater than zero.");
-        let mut cursors = self.cursor_data();
-
-        let cas_params = ParamsCasTailForPushBatch {
-            cursor_data:      &mut cursors,
-            src_amount:       vals.len(),
-            push_amount:      max,
-            success_order:    Release,
-            fail_order:       Acquire,
-            fetch_head_order: Relaxed,
-        };
-        let take_amount = match self.try_cas_tail_for_push(cas_params)
+        debug_assert!(!vals.is_empty(), "cannot take data from an empty source");
+        let cursors = self.cursor_data();
+        let take_amount = cursors.available_slots().min(max).min(vals.len());
+        if take_amount < 1
         {
-            Some(r) => r,
-            None => return 0,
-        };
+            return 0;
+        }
+
         for (offset, e) in vals.drain(..take_amount).enumerate()
         {
             let write_idx = cursors.tail.wrapping_add(offset as u32);
@@ -100,6 +90,7 @@ impl<T> SpmcRingBufferFifo<T>
             }
         }
 
+        self.tail.store(cursors.tail.wrapping_add(take_amount as u32), Release);
         take_amount
     }
     pub fn pop(&mut self) -> Option<T>
@@ -116,10 +107,13 @@ impl<T> SpmcRingBufferFifo<T>
 
         self.try_cas_for_pop_batch(params)?;
 
-        let result = unsafe { Some(self.buffer.take_at(cursor_data.in_progress)) };
+        // `cursor_data.in_progress` is the pre-CAS value, i.e. the start of the range this call
+        // just claimed. `cursor_data.stolen` is unrelated to that: it may sit behind if another
+        // consumer's claim is still mid-read.
+        let claim_start = cursor_data.in_progress;
+        let result = unsafe { Some(self.buffer.take_at(claim_start)) };
 
-        // notify consumers that I've finished the task
-        self.head.store_pack((cursor_data.stolen.wrapping_add(1), cursor_data.in_progress), Release);
+        self.publish_stolen(claim_start, 1);
 
         result
     }
@@ -140,55 +134,21 @@ impl<T> SpmcRingBufferFifo<T>
             Some(r) => r,
             None => return 0,
         };
+        // same reasoning as `pop`: the claimed range starts at the pre-CAS `in_progress`, not at `stolen`.
+        let claim_start = cursor_data.in_progress;
         for offset in 0..pop_amount
         {
-            let cursor_idx = cursor_data.stolen.wrapping_add(offset as u32);
+            let cursor_idx = claim_start.wrapping_add(offset as u32);
             let val = unsafe { self.buffer.take_at(cursor_idx) };
             dst.push(val);
         }
-        // notify consumers that I've finished the task
-        self.head
-            .store_pack((cursor_data.stolen.wrapping_add(pop_amount as u32), cursor_data.in_progress), Release);
+        self.publish_stolen(claim_start, pop_amount as u32);
         pop_amount
     }
 }
 
 impl<T> SpmcRingBufferFifo<T>
 {
-    /// calculates the maximum number of elements that can be moved from the source into the available empty slots,
-    /// and stores the new tail cursor
-    #[cold]
-    fn try_cas_tail_for_push(&self, mut cas_data: ParamsCasTailForPushBatch) -> Option<usize>
-    {
-        debug_assert!(cas_data.src_amount > 0, "cannot take data from an empty source");
-        loop
-        {
-            let available_slots = cas_data.cursor_data.available_slots();
-            if available_slots < 1
-            {
-                return None;
-            }
-            cas_data.push_amount = cas_data.push_amount.min(available_slots).min(cas_data.src_amount);
-
-            let current_tail = cas_data.cursor_data.tail;
-            let next_tail = current_tail.wrapping_add(cas_data.push_amount as u32);
-
-            match self
-                .tail
-                .compare_exchange_weak(current_tail, next_tail, cas_data.success_order, cas_data.fail_order)
-            {
-                Ok(_) => return Some(cas_data.push_amount),
-                Err(c) =>
-                {
-                    let (stolen, in_progress) = self.head.load_unpack(cas_data.fetch_head_order);
-                    cas_data.cursor_data.tail = c;
-                    cas_data.cursor_data.stolen = stolen;
-                    cas_data.cursor_data.in_progress = in_progress;
-                }
-            }
-        }
-    }
-
     /// Calculates the maximum number of elements that can be moved from the buffer and updates the head cursor
     /// Note: Since this is an SPMC implementation, we do not increment the stolen count during the CAS operation. The caller must handle this after successfully popping the value.
     #[cold]
@@ -224,6 +184,32 @@ impl<T> SpmcRingBufferFifo<T>
                     cas_data.cursor_data.in_progress = in_progress;
                     cas_data.cursor_data.tail = tail;
                 }
+            }
+        }
+    }
+
+    /// Publishes that `[start, start + amount)` has actually been read out of the buffer, letting
+    /// the producer reuse those slots. `stolen` may only ever advance over a contiguous, fully
+    /// finished prefix, so this waits until it's this call's turn (`stolen == start`): an earlier
+    /// claim from another concurrent `pop`/`pop_batch` might still be mid-read.
+    #[cold]
+    fn publish_stolen(&self, start: u32, amount: u32)
+    {
+        let mut backoff = Backoff::new();
+        loop
+        {
+            let current = self.head.load(Acquire);
+            let (stolen, in_progress) = unpack(current);
+            if stolen != start
+            {
+                backoff.snooze();
+                continue;
+            }
+            let next = pack(stolen.wrapping_add(amount), in_progress);
+            match self.head.compare_exchange_weak(current, next, Release, Acquire)
+            {
+                Ok(_) => return,
+                Err(_) => backoff.snooze(),
             }
         }
     }
