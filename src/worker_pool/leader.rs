@@ -2,13 +2,13 @@ use std::thread::JoinHandle;
 
 use xynok_std::unsafe_ptr::HeapPtr;
 
-use crate::collection::ring_buffer::fifo::RingBufferFifo;
+use crate::collection::ring_buffer::spmc_fifo::SpmcRingBufferFifo;
 use crate::utils::inline_fn::InlineFn;
 use crate::worker_pool::thread_meta::ThreadData;
 pub struct Leader
 {
     pub meta_data: ThreadData,
-    pub tasks:     HeapPtr<RingBufferFifo<InlineFn>>,
+    pub tasks:     HeapPtr<SpmcRingBufferFifo<InlineFn>>,
 }
 
 impl Leader
@@ -16,7 +16,7 @@ impl Leader
     #[track_caller]
     pub fn new(handle: JoinHandle<()>, task_capacity: usize) -> Self
     {
-        let tasks = HeapPtr::new(RingBufferFifo::<InlineFn>::new(task_capacity));
+        let tasks = HeapPtr::new(SpmcRingBufferFifo::<InlineFn>::new(task_capacity));
         Self {
             meta_data: ThreadData::new(handle),
             tasks,

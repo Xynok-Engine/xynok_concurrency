@@ -1,4 +1,4 @@
-pub mod fifo;
+pub mod spmc_fifo;
 pub mod lifo;
 pub(crate) mod head;
 pub(crate) mod consts;
