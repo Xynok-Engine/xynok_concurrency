@@ -22,6 +22,7 @@ I learned these concepts and implemented the types myself to sharpen my concurre
 - `src/latch.rs`: the countdown every join point is built from.
 - `src/per_worker.rs`: one slot per thread, so results are written without sharing and merged in index order.
 - `src/bump.rs`: a per-worker scratch arena where allocating is a pointer bump.
+
 - `src/task.rs`: the async lane's executor. A future becomes a task, and the task puts itself back in the lane every time it is woken.
 - `src/channel.rs`: a one-shot channel, for a job that has to hand a value back. The receiving end is also a `Future`.
 - `src/profile.rs`, `src/pool/counters.rs`: what the pool itself is doing, since none of it is visible from outside.

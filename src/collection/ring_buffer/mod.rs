@@ -1,6 +1,5 @@
-pub mod spmc_fifo;
-pub mod lifo;
-pub(crate) mod head;
+pub mod spmc;
+pub(crate) mod packed;
 pub(crate) mod consts;
 pub(crate) mod fixed_buffer;
 pub(crate) mod cursors;

@@ -10,7 +10,7 @@
 pub struct CursorData
 {
     pub stolen:      u32,
-    pub in_progress: u32,
+    pub in_stealing: u32,
     pub tail:        u32,
     pub capacity:    u32,
     pub mask:        u32,
@@ -29,7 +29,7 @@ impl CursorData
     #[inline]
     pub fn filled_slots(&self) -> usize
     {
-        self.tail.wrapping_sub(self.in_progress) as usize
+        self.tail.wrapping_sub(self.in_stealing) as usize
     }
 }
 #[cfg(test)]

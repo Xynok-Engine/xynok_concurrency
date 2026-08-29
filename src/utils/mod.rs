@@ -1,6 +1,6 @@
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU32};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU8};
 
 pub mod spinlock;
 pub mod backoff;
@@ -10,6 +10,7 @@ pub mod queue_batching;
 pub mod inline_fn;
 pub mod slots;
 pub mod steal;
+pub mod backoff_manual;
 
 #[inline]
 pub const fn pack(a: u32, b: u32) -> u64

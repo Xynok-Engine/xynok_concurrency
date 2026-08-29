@@ -4,11 +4,11 @@ use crate::sync::{AtomicU64, Ordering};
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::{pack, unpack};
 
-pub struct Head
+pub struct Packed
 {
     packed: CachePadded<AtomicU64>,
 }
-impl Head
+impl Packed
 {
     pub const fn new(stolen: u32, in_progress: u32) -> Self
     {
@@ -45,7 +45,7 @@ impl Head
     }
 }
 
-impl Debug for Head
+impl Debug for Packed
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
@@ -53,7 +53,7 @@ impl Debug for Head
         f.debug_struct("Head").field("stolen", &stolen).field("in_progress", &in_progress).finish()
     }
 }
-impl Display for Head
+impl Display for Packed
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {

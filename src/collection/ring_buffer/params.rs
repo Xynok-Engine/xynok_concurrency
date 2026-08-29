@@ -12,9 +12,9 @@ pub struct ParamsCasTailForPushBatch<'a>
 
 pub struct ParamsCasForPopBatch<'a>
 {
-    pub cursor_data:      &'a mut CursorData,
-    pub pop_amount:       usize,
-    pub success_order:    Ordering,
-    pub fail_order:       Ordering,
-    pub fetch_tail_order: Ordering,
+    pub cursor_data:           &'a mut CursorData,
+    pub pop_amount:            usize,
+    pub success_order:         Ordering,
+    pub fail_order:            Ordering,
+    pub fetch_after_cas_order: Ordering,
 }
