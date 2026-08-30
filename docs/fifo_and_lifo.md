@@ -14,7 +14,7 @@ Most developers are familiar with the basic definitions of FIFO (First-In, First
 
 When working with thread pools or task pools, we often maintain a queue of pending work. In many scenarios, sequential execution is critical, making FIFO the natural choice. When tasks are processed in the order they arrive, the system maintains a predictable flow. This is generally the standard approach for managing global task queues.
 
-## The Challenge of Nested Tasks in SCS
+## The Challenge of Nested Tasks in ECS
 
 In an ECS (Entity Component System) architecture, the situation becomes more complex. Tasks are not always high-level systems. Often, a system contains internal loops or logic that requires parallel execution to achieve maximum performance. For instance, processing 1024 tracks might necessitate multi-threading to remain efficient.
 
