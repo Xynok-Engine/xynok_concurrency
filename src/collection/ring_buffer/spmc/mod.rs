@@ -1,5 +1,5 @@
+use crate::collection::fixed_buffer::FixedBuffer;
 use crate::collection::ring_buffer::cursors::CursorData;
-use crate::collection::ring_buffer::fixed_buffer::FixedBuffer;
 use crate::collection::ring_buffer::packed::Packed;
 use crate::collection::ring_buffer::params::ParamsCasForPopBatch;
 use crate::sync::AtomicU32;

@@ -1,10 +1,9 @@
-use std::thread::JoinHandle;
-
-use xynok_std::unsafe_ptr::HeapPtr;
-
 use crate::collection::ring_buffer::spmc::SpmcRingBuffer;
+use crate::sync::thread::{self, JoinHandle};
 use crate::utils::inline_fn::InlineFn;
 use crate::worker_pool::thread_meta::ThreadData;
+use xynok_std::unsafe_ptr::HeapPtr;
+
 pub struct Worker
 {
     pub meta_data: ThreadData,
@@ -21,5 +20,11 @@ impl Worker
             meta_data: ThreadData::new(handle),
             tasks,
         }
+    }
+
+    pub fn update()
+    {
+        println!("{}: looping !", thread::current().name().unwrap_or("<no_name>"));
+        thread::park_timeout(std::time::Duration::from_millis(300));
     }
 }
