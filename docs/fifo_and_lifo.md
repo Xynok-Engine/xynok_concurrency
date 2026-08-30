@@ -16,9 +16,9 @@ When working with thread pools or task pools, we often maintain a queue of pendi
 
 ## The Challenge of Nested Tasks in ECS
 
-In an ECS (Entity Component System) architecture, the situation becomes more complex. Tasks are not always high-level systems. Often, a system contains internal loops or logic that requires parallel execution to achieve maximum performance. For instance, processing 1024 tracks might necessitate multi-threading to remain efficient.
+In an ECS (Entity Component System) architecture, the situation becomes more complex. Tasks are not always high-level systems. Often, a system contains internal loops or logic that require parallel execution to achieve maximum performance. For instance, processing 1024 tracks might necessitate multi-threading to remain efficient.
 
-In this scenario, a parent task can spawn multiple child tasks. If we use a standard FIFO queue for these child tasks, they are placed at the back of the global queue. This means they will only be executed after all other pending tasks in the pool, which breaks the logic of the parent task. The parent task cannot complete until its children have finished, but the FIFO structure forces the children to wait behind unrelated work.
+A parent task can spawn multiple child tasks, and these children can spawn grandchild tasks, and so on. If we use a standard FIFO queue for these child tasks, they are placed at the back of the global queue. This means they will only be executed after all other pending tasks in the pool, which breaks the logic of the parent task. The parent task cannot complete until its children have finished, but the FIFO structure forces the children to wait behind unrelated work.
 
 ## A Two-Layer Scheduling Solution
 
