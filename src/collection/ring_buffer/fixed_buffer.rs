@@ -1,3 +1,4 @@
+use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::sync::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 
@@ -9,8 +10,22 @@ pub struct FixedBuffer<T>
 
 impl<T> FixedBuffer<T>
 {
-    pub fn new(capacity: u32) -> Self
+    #[track_caller]
+    pub fn new(capacity: usize) -> Self
     {
+        debug_assert!(
+            capacity > 0,
+            "`{}` capacity `{}` must be greater than 0 !",
+            std::any::type_name::<Self>(),
+            capacity
+        );
+        debug_assert!(
+            capacity < MAX_CAPACITY,
+            "`{}` capacity `{}` exceeds `{}` limit for wrapping u32 indices",
+            std::any::type_name::<Self>(),
+            capacity,
+            MAX_CAPACITY
+        );
         debug_assert!(
             capacity.is_power_of_two(),
             "`{}` is initizealed with capacity `{}` is not power of 2 !",
@@ -18,8 +33,8 @@ impl<T> FixedBuffer<T>
             capacity
         );
         Self {
-            cells: allocate(capacity as usize),
-            mask:  capacity - 1,
+            cells: allocate(capacity),
+            mask:  (capacity - 1) as u32,
         }
     }
 

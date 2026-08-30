@@ -1,4 +1,3 @@
-use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::collection::ring_buffer::cursors::CursorData;
 use crate::collection::ring_buffer::fixed_buffer::FixedBuffer;
 use crate::collection::ring_buffer::packed::Packed;
@@ -8,6 +7,12 @@ use crate::sync::Ordering::{Acquire, Relaxed, Release};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::{pack, unpack};
+
+use consumer::Consumer;
+use producer::Producer;
+
+pub mod producer;
+pub mod consumer;
 
 /// Single Producer - Multiple Consumers, Ring Buffer, Fist In - Firt Out
 pub struct SpmcRingBuffer<T>
@@ -21,37 +26,45 @@ pub struct SpmcRingBuffer<T>
 unsafe impl<T: Send> Send for SpmcRingBuffer<T> {}
 unsafe impl<T: Send> Sync for SpmcRingBuffer<T> {}
 
+impl<T> Drop for SpmcRingBuffer<T>
+{
+    fn drop(&mut self)
+    {
+        let (_, real) = unpack(self.head.load(Relaxed));
+        let tail = self.tail.load(Relaxed);
+
+        for offset in 0..tail.wrapping_sub(real)
+        {
+            unsafe { self.buffer.drop_at(real.wrapping_add(offset)) };
+        }
+    }
+}
+
 impl<T> SpmcRingBuffer<T>
 {
-    #[track_caller]
+    /// The capacity must be a power of 2. If it is not, the code will panic.
     pub fn new(capacity: usize) -> Self
     {
-        debug_assert!(
-            capacity.is_power_of_two() && capacity > 0,
-            "`{}` capacity `{}` must be power of 2 and greater than 0 !",
-            std::any::type_name::<Self>(),
-            capacity
-        );
-        debug_assert!(
-            capacity < MAX_CAPACITY,
-            "`{}` capacity `{}` exceeds `{}` limit for wrapping u32 indices",
-            std::any::type_name::<Self>(),
-            capacity,
-            MAX_CAPACITY
-        );
         Self {
             head:   Packed::new(0, 0),
             tail:   CachePadded::new(AtomicU32::new(0)),
-            buffer: FixedBuffer::new(capacity as u32),
+            buffer: FixedBuffer::new(capacity),
         }
     }
+    pub fn split(&self) -> (Producer<'_, T>, Consumer<'_, T>)
+    {
+        (Producer::new(self), Consumer::new(self))
+    }
+}
 
+impl<T> SpmcRingBuffer<T>
+{
     // There is only ever one producer, so `tail` has no contention: no CAS is needed here, just a
     // plain load and a plain store. What matters is the order: write the data first, publish the
     // new `tail` (Release) after, so an consumer that observes the new `tail` (Acquire, see
     // `cursor_data`) is guaranteed to also observe the write that just happened.
     #[inline]
-    pub fn push(&mut self, val: T) -> Result<(), T>
+    pub(crate) fn push(&self, val: T) -> Result<(), T>
     {
         let cursors = self.cursor_data();
         if cursors.available_slots() < 1
@@ -70,8 +83,7 @@ impl<T> SpmcRingBuffer<T>
     /// Takes up to `max` elements from `vals`. Elements are taken in order from left to right, starting from index `0` to `N`.
     /// - return: the number of elements successfully taken.
     #[inline]
-    #[track_caller]
-    pub fn push_batch(&mut self, max: usize, vals: &mut Vec<T>) -> usize
+    pub(crate) fn push_batch(&self, max: usize, vals: &mut Vec<T>) -> usize
     {
         debug_assert!(max > 0, "The push batch size must be greater than zero.");
         debug_assert!(!vals.is_empty(), "cannot take data from an empty source");
@@ -93,7 +105,7 @@ impl<T> SpmcRingBuffer<T>
         self.tail.store(cursors.tail.wrapping_add(take_amount as u32), Release);
         take_amount
     }
-    pub fn pop(&self) -> Option<T>
+    pub(crate) fn pop(&self) -> Option<T>
     {
         let mut cursor_data = self.cursor_data();
 
@@ -114,7 +126,8 @@ impl<T> SpmcRingBuffer<T>
 
         result
     }
-    pub fn pop_batch(&self, max: usize, dst: &mut Vec<T>) -> usize
+    #[inline]
+    pub(crate) fn pop_batch(&self, max: usize, dst: &mut Vec<T>) -> usize
     {
         let mut cursor_data = self.cursor_data();
 
@@ -141,11 +154,8 @@ impl<T> SpmcRingBuffer<T>
         self.publish_stolen(claim_start, pop_amount as u32);
         pop_amount
     }
-}
 
-impl<T> SpmcRingBuffer<T>
-{
-    /// Calculates the maximum number of elements that can be moved from the buffer and updates the head cursor
+    /// calculates the maximum number of elements that can be moved from the buffer and updates the head cursor
     /// Note: Since this is an SPMC implementation, we do not increment the stolen count during the CAS operation. The caller must handle this after successfully popping the value.
     #[cold]
     fn try_cas_for_pop_batch(&self, mut cas_data: ParamsCasForPopBatch) -> Option<usize>
@@ -164,6 +174,7 @@ impl<T> SpmcRingBuffer<T>
 
             let next_head = pack(
                 cas_data.cursor_data.stolen,
+                // reserve a slot for the pop operation, creating a barrier for other consumers
                 cas_data.cursor_data.in_stealing.wrapping_add(cas_data.pop_amount as u32),
             );
 
@@ -198,7 +209,7 @@ impl<T> SpmcRingBuffer<T>
                 continue;
             }
             let next = pack(stolen.wrapping_add(amount), in_progress);
-            match self.head.compare_exchange_weak(current, next, Release, Acquire)
+            match self.head.compare_exchange_weak(current, next, Release, Relaxed)
             {
                 Ok(_) => return,
                 Err(_) => backoff.snooze(),
@@ -225,6 +236,7 @@ impl<T> SpmcRingBuffer<T>
 mod test
 {
     use super::*;
+    use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 
     #[test]
     fn test_drain()
@@ -250,7 +262,7 @@ mod test
     }
 
     #[test]
-    #[should_panic(expected = "power of 2")]
+    #[should_panic]
     fn capacity_zero_panics()
     {
         let _ = SpmcRingBuffer::<u8>::new(0);
@@ -269,7 +281,7 @@ mod test
     #[should_panic(expected = "greater than zero")]
     fn push_batch_with_zero_max_panics()
     {
-        let mut ring = SpmcRingBuffer::new(4);
+        let ring = SpmcRingBuffer::new(4);
         let mut vals = vec![1u32];
         let _ = ring.push_batch(0, &mut vals);
     }
@@ -278,7 +290,7 @@ mod test
     #[should_panic(expected = "empty source")]
     fn push_batch_with_empty_vals_panics()
     {
-        let mut ring = SpmcRingBuffer::new(4);
+        let ring = SpmcRingBuffer::new(4);
         let mut vals: Vec<u32> = Vec::new();
         let _ = ring.push_batch(4, &mut vals);
     }
@@ -304,7 +316,7 @@ mod test
     #[test]
     fn push_and_pop_keep_fifo_order()
     {
-        let mut ring = SpmcRingBuffer::new(4);
+        let ring = SpmcRingBuffer::new(4);
         for i in 0..4u32
         {
             assert_eq!(ring.push(i), Ok(()));
@@ -319,7 +331,7 @@ mod test
     #[test]
     fn push_when_full_returns_value_instead_of_dropping_it()
     {
-        let mut ring = SpmcRingBuffer::new(2);
+        let ring = SpmcRingBuffer::new(2);
         assert_eq!(ring.push(1), Ok(()));
         assert_eq!(ring.push(2), Ok(()));
         assert_eq!(ring.push(3), Err(3));
@@ -331,7 +343,7 @@ mod test
     #[test]
     fn index_wraparound_still_keeps_order()
     {
-        let mut ring = SpmcRingBuffer::new(4);
+        let ring = SpmcRingBuffer::new(4);
         for round in 0..10u32
         {
             for i in 0..4u32
@@ -350,7 +362,7 @@ mod test
     #[test]
     fn push_batch_limited_by_free_slots_and_keeps_the_remainder()
     {
-        let mut ring = SpmcRingBuffer::new(4);
+        let ring = SpmcRingBuffer::new(4);
         let mut vals: Vec<u32> = (0..10).collect();
 
         assert_eq!(ring.push_batch(10, &mut vals), 4);
@@ -363,7 +375,7 @@ mod test
     #[test]
     fn push_batch_limited_by_max_param()
     {
-        let mut ring = SpmcRingBuffer::new(8);
+        let ring = SpmcRingBuffer::new(8);
         let mut vals: Vec<u32> = (0..8).collect();
 
         assert_eq!(ring.push_batch(3, &mut vals), 3);
@@ -373,7 +385,7 @@ mod test
     #[test]
     fn push_batch_limited_by_vals_length()
     {
-        let mut ring = SpmcRingBuffer::new(8);
+        let ring = SpmcRingBuffer::new(8);
         let mut vals: Vec<u32> = (0..3).collect();
 
         assert_eq!(ring.push_batch(8, &mut vals), 3);
@@ -385,7 +397,7 @@ mod test
     #[test]
     fn pop_batch_returns_correct_order_and_is_limited_by_available_count()
     {
-        let mut ring = SpmcRingBuffer::new(8);
+        let ring = SpmcRingBuffer::new(8);
         let mut vals: Vec<u32> = (0..5).collect();
         assert_eq!(ring.push_batch(5, &mut vals), 5);
 
@@ -398,7 +410,7 @@ mod test
     #[test]
     fn pop_batch_limited_by_max_param()
     {
-        let mut ring = SpmcRingBuffer::new(8);
+        let ring = SpmcRingBuffer::new(8);
         let mut vals: Vec<u32> = (0..8).collect();
         assert_eq!(ring.push_batch(8, &mut vals), 8);
 
@@ -412,7 +424,7 @@ mod test
     #[test]
     fn push_batch_and_pop_batch_still_correct_on_wraparound()
     {
-        let mut ring = SpmcRingBuffer::new(4);
+        let ring = SpmcRingBuffer::new(4);
         for round in 0..20u32
         {
             let mut vals: Vec<u32> = (0..3).map(|i| round * 3 + i).collect();
