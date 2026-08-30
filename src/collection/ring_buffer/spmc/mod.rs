@@ -154,7 +154,9 @@ impl<T> SpmcRingBuffer<T>
         self.publish_stolen(claim_start, pop_amount as u32);
         pop_amount
     }
-
+}
+impl<T> SpmcRingBuffer<T>
+{
     /// calculates the maximum number of elements that can be moved from the buffer and updates the head cursor
     /// Note: Since this is an SPMC implementation, we do not increment the stolen count during the CAS operation. The caller must handle this after successfully popping the value.
     #[cold]

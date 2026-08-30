@@ -22,6 +22,9 @@ impl<'a, T> Consumer<'a, T>
     {
         self.ring.pop_batch(max, dst)
     }
+
+    #[inline]
+    pub fn claim(&self) {}
 }
 impl<T> Clone for Consumer<'_, T>
 {

@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Instant;
 
 use xynok_concurrency::collection::ring_buffer::spmc::consumer::Consumer;
 use xynok_concurrency::collection::ring_buffer::spmc::*;
@@ -16,12 +17,13 @@ fn multiple_thread()
 {
     println!("--- multiple threads ---");
 
-    let total_task = 1024;
-    let ring_size = 16;
+    let total_task = 10_000;
+    let ring_size = 256;
     let total_consumer = 8;
 
     let mut tasks = vec![0u32; total_task];
 
+    let start = Instant::now();
     {
         let ring = SpmcRingBuffer::<TaskType>::new(ring_size);
         let (producer, consumer) = ring.split();
@@ -57,8 +59,15 @@ fn multiple_thread()
         });
     }
 
+    let duration = start.elapsed();
     assert!(tasks.iter().all(|v| *v == 1));
     println!("all {} elements have been set to 1", total_task);
+    println!(
+        "total duration: {:?} ({:.0} tasks/sec, {:?}/task)",
+        duration,
+        total_task as f64 / duration.as_secs_f64(),
+        duration / total_task as u32
+    );
 }
 fn consumer_logic(id: usize, consumer: Consumer<TaskType>, done: &AtomicBool)
 {
@@ -105,7 +114,7 @@ fn single_thread()
 
     assert!(producer.push(99) == Err(99));
 
-    println!("pushed: ");
+    print!("pushed: ");
     while let Some(val) = consumer.pop()
     {
         print!("{} ", val);

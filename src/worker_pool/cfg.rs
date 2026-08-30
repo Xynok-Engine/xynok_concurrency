@@ -2,10 +2,8 @@ use crate::apis::priority::Priority;
 
 pub struct CfgWorkerPool
 {
-    pub name:        String,
-    pub priority:    Priority,
-    pub spin_limit:  usize,
-    pub yield_limit: usize,
+    pub name:     String,
+    pub priority: Priority,
 
     /// The estimated maximum number of tasks for the pool. This pool will grow if this limit is exceeded.
     pub task_capacity: usize,

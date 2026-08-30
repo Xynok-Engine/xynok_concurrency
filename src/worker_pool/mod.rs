@@ -105,8 +105,6 @@ mod test
         let _worker_pool = WorkerPool::new(CfgWorkerPool {
             name:                     "test_pool".to_string(),
             priority:                 crate::apis::priority::Priority::Frame,
-            spin_limit:               6,
-            yield_limit:              10,
             worker_capacity:          8,
             task_capacity:            256,
             per_worker_task_capacity: 64,
