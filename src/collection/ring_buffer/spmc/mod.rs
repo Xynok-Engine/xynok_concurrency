@@ -1,11 +1,11 @@
-use crate::collection::fixed_buffer::FixedBuffer;
-use crate::collection::ring_buffer::cursors::CursorData;
-use crate::collection::ring_buffer::packed::Packed;
 use crate::collection::ring_buffer::params::ParamsCasForPopBatch;
 use crate::sync::AtomicU32;
 use crate::sync::Ordering::{Acquire, Relaxed, Release};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
+use crate::utils::cursors::CursorData;
+use crate::utils::fixed_buffer::FixedBuffer;
+use crate::utils::packed::Packed;
 use crate::utils::{pack, unpack};
 
 use consumer::Consumer;
@@ -204,13 +204,13 @@ impl<T> SpmcRingBuffer<T>
         loop
         {
             let current = self.head.load(Acquire);
-            let (stolen, in_progress) = unpack(current);
+            let (stolen, in_stealing) = unpack(current);
             if stolen != start
             {
                 backoff.snooze();
                 continue;
             }
-            let next = pack(stolen.wrapping_add(amount), in_progress);
+            let next = pack(stolen.wrapping_add(amount), in_stealing);
             match self.head.compare_exchange_weak(current, next, Release, Relaxed)
             {
                 Ok(_) => return,

@@ -40,11 +40,32 @@ Choosing the right data structure for task queues is critical when dealing with 
 
 When another worker thread attempts to steal, it should also pull from the LIFO stack. This ensures that the thief takes the most recently spawned sub-task. This approach maintains the locality of the work and respects the implicit dependency order created by the recursive generation of tasks.
 
-## Handling Dependencies
+## Handling Dependencies and Deadlocks
 
-Sometimes, a system consists of two steps, where step B depends on the results of step A. If step A generates multiple parallel sub-tasks, the worker thread must wait for those tasks to complete before proceeding to step B. While a worker could theoretically perform other work while waiting, this introduces significant complexity. For now, the core focus remains on understanding the interplay between task distribution, LIFO/FIFO selection, and the prevention of execution conflicts.
+In systems where a task is split into parallel sub-tasks, the worker executing the parent task must wait for these sub-tasks to complete before proceeding to the next step. If every worker in the system is occupied by such dependencies, the system risks a deadlock where no worker is available to steal pending tasks from others.
 
-This is likely a challenge I will need to address in the future. For now, if this waiting period does not lead to calculation errors, it is acceptable. This means if a worker spawns sub-tasks and depends on their parallel completion, it is best for that worker to wait. Theoretically, it is permitted to perform other work in the meantime, but the system only receives a pointer when a task is submitted. Because I do not know how many segments the logic contains, I cannot easily decompose it. I will leave this open for a future post, or perhaps I will update this article later.
+## The LIFO Stack Design
+
+To address this, my design uses a LIFO (Last-In, First-Out) stack for each worker. When a task generates multiple sub-tasks, they are pushed onto this stack. This allows workers to prioritize the most recently generated sub-tasks, which is generally more cache-friendly.
+
+Currently, the LIFO stack in `xynok_concurrency` uses a fixed-size buffer. I chose a fixed size for two primary reasons:
+
+*   **Memory Safety:** Avoiding re-allocation prevents dangling pointers. If a buffer were to re-allocate, other workers attempting to read from it would encounter invalid memory addresses, necessitating complex synchronization to ensure thread safety.
+*   **Resource Efficiency:** Since tasks migrate between workers across frames, a growable stack would eventually lead to excessive memory allocation scattered across every worker, resulting in significant memory waste.
+
+## Managing Stack Overflow with Lazy Allocation
+
+Because the stack has a fixed capacity, it may overflow when a parent task generates a large number of sub-tasks. To handle this without re-allocation, I implement a form of "lazy allocation" (or lazy pushing):
+
+1.  **Check Capacity:** Before pushing sub-tasks, check the available slots in the stack.
+2.  **Partial Pushing:** If the number of sub-tasks is less than or equal to the available space, push them all onto the stack.
+3.  **Recursive Division:** If the number of sub-tasks exceeds the remaining capacity, divide the sub-tasks into smaller batches. For example, if you have 32 sub-tasks and limited space, divide them into smaller groups (e.g., 16, 8, then 4) until a batch fits into the stack.
+4.  **Deferred Processing:** Push only the first batch (e.g., 4 tasks) onto the stack and keep the remaining tasks within the current scope.
+5.  **Iterative Filling:** As workers process the tasks in the stack and free up slots, continue pushing the remaining batches until all sub-tasks have been processed.
+
+This approach ensures the stack never overflows and eliminates the need for dynamic resizing, keeping the synchronization logic straightforward and the memory footprint predictable.
+
 
 ## References
 - [fifo & lifo, why it matter ?](fifo_and_lifo.md)
+

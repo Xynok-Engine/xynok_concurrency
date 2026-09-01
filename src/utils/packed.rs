@@ -10,10 +10,10 @@ pub struct Packed
 }
 impl Packed
 {
-    pub const fn new(stolen: u32, in_progress: u32) -> Self
+    pub const fn new(a: u32, b: u32) -> Self
     {
         Self {
-            packed: CachePadded::new(AtomicU64::new(pack(stolen, in_progress))),
+            packed: CachePadded::new(AtomicU64::new(pack(a, b))),
         }
     }
     #[inline]
@@ -50,7 +50,7 @@ impl Debug for Packed
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
         let (stolen, in_progress) = self.load_unpack(Ordering::Relaxed);
-        f.debug_struct("Head").field("stolen", &stolen).field("in_progress", &in_progress).finish()
+        f.debug_struct("Packed").field("a", &stolen).field("b", &in_progress).finish()
     }
 }
 impl Display for Packed
@@ -58,6 +58,6 @@ impl Display for Packed
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
         let (stolen, in_progress) = self.load_unpack(Ordering::Relaxed);
-        write!(f, "Head(stolen: {stolen}, in_progress: {in_progress})")
+        write!(f, "Packed(a: {stolen}, b: {in_progress})")
     }
 }

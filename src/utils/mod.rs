@@ -9,8 +9,11 @@ pub mod cache_padded;
 pub mod queue_batching;
 pub mod inline_fn;
 pub mod slots;
+pub mod packed;
 pub mod steal;
 pub mod backoff_manual;
+pub mod cursors;
+pub mod fixed_buffer;
 
 #[inline]
 pub const fn pack(a: u32, b: u32) -> u64

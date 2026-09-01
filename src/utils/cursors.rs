@@ -1,6 +1,6 @@
-/// Represents a snapshot of the Ring Buffer indices, loaded atomically to ensure consistent CPU-side ordering.
+/// Represents a snapshot of the [`FixedBuffer`] indices, loaded atomically to ensure consistent CPU-side ordering.
 ///
-/// When working with a Ring Buffer, we often need to synchronize the loading of index values during a single call. This ensures that the CPU maintains a consistent and sequential order of operations.
+/// When working with a [`FixedBuffer`], we often need to synchronize the loading of index values during a single call. This ensures that the CPU maintains a consistent and sequential order of operations.
 ///
 /// ### The Problem
 /// In practice, checking indices or retrieving values requires repetitive code. Because these index operations are scattered across various methods, the implementation quickly becomes verbose and difficult to maintain.

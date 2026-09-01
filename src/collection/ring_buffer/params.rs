@@ -1,5 +1,5 @@
-use crate::collection::ring_buffer::cursors::CursorData;
 use crate::sync::Ordering;
+use crate::utils::cursors::CursorData;
 pub struct ParamsCasTailForPushBatch<'a>
 {
     pub cursor_data:      &'a mut CursorData,
