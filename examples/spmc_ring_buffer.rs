@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Instant;
 
-use xynok_concurrency::collection::ring_buffer::spmc::consumer::Consumer;
-use xynok_concurrency::collection::ring_buffer::spmc::*;
+use xynok_concurrency::collection::ring_buffer::spmc_fifo::consumer::Consumer;
+use xynok_concurrency::collection::ring_buffer::spmc_fifo::*;
 use xynok_concurrency::utils::backoff::Backoff;
 
 type TaskType<'a> = &'a mut u32;
@@ -25,7 +25,7 @@ fn multiple_thread()
 
     let start = Instant::now();
     {
-        let ring = SpmcRingBuffer::<TaskType>::new(ring_size);
+        let ring = SpmcRingBufferFifo::<TaskType>::new(ring_size);
         let (producer, consumer) = ring.split();
 
         let tasks_as_mut = tasks.iter_mut();
@@ -104,7 +104,7 @@ fn single_thread()
 {
     println!("--- single thread ---");
 
-    let ring = SpmcRingBuffer::<u32>::new(4);
+    let ring = SpmcRingBufferFifo::<u32>::new(4);
     let (producer, consumer) = ring.split();
 
     for i in 0..4u32

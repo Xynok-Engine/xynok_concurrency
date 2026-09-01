@@ -2,13 +2,13 @@ use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::sync::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 
-pub struct FixedBuffer<T>
+pub struct FixedRingBuffer<T>
 {
     cells: Box<[UnsafeCell<MaybeUninit<T>>]>,
     mask:  u32,
 }
 
-impl<T> FixedBuffer<T>
+impl<T> FixedRingBuffer<T>
 {
     #[track_caller]
     pub fn new(capacity: usize) -> Self

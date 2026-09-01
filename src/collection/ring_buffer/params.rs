@@ -1,5 +1,6 @@
 use crate::sync::Ordering;
 use crate::utils::cursors::CursorData;
+use crate::utils::fixed_buffer::FixedRingBuffer;
 pub struct ParamsCasTailForPushBatch<'a>
 {
     pub cursor_data:      &'a mut CursorData,
@@ -17,4 +18,11 @@ pub struct ParamsCasForPopBatch<'a>
     pub success_order:         Ordering,
     pub fail_order:            Ordering,
     pub fetch_after_cas_order: Ordering,
+}
+
+pub struct WriteableBuffer<'a, T>
+{
+    pub buffer:             &'a FixedRingBuffer<T>,
+    pub write_start_cursor: u32,
+    pub max_write_count:    usize,
 }

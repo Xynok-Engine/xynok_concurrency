@@ -20,7 +20,7 @@ impl CursorData
 {
     /// the number of guaranteed empty slots
     #[inline]
-    pub fn available_slots(&self) -> usize
+    pub fn empty_slots(&self) -> usize
     {
         self.capacity.wrapping_sub(self.tail).wrapping_add(self.stolen) as usize
     }
