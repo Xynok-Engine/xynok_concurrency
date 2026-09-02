@@ -1,7 +1,7 @@
 ---
 title: Ring Buffer
 excerpt: A data structure that helps us minimize contention between threads.
-cover img: https://upload.wikimedia.org/wikipedia/commons/thumb/b/b7/Circular_buffer.svg/1280px-Circular_buffer.svg.png?utm_source=en.wikipedia.org&utm_campaign=imageinfo&utm_content=thumbnail
+cover img: "../images/ring_buffer.png"
 tags:
   - concurrency
   - data_structure
