@@ -1,15 +1,16 @@
 use crate::sync::thread::{JoinHandle, Thread};
-pub struct ThreadData
+pub struct WorkerData
 {
     pub host:   Thread,
     pub handle: JoinHandle<()>,
 }
 
-impl ThreadData
+impl WorkerData
 {
     pub fn new(handle: JoinHandle<()>) -> Self
     {
         let host = handle.thread().clone();
+
         Self { host, handle }
     }
 }

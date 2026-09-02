@@ -109,9 +109,9 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             write_start_cursor: cursor_data.tail,
             max_write_count:    take_amount,
         };
-        // `take_amount` mới chỉ là chỗ mình xin, còn lấy được bao nhiêu là chuyện của `src`: kẻ
-        // trộm khác có thể cướp mất một phần ngay giữa lúc này. Nhích `tail` theo con số đã xin sẽ
-        // để lộ những ô chưa ai ghi, và người trộm tiếp theo đọc trúng rác. Nhích theo con số thật.
+        // `take_amount` is just what we requested, but the actual amount we can take depends on `src`:
+        // other thieves might snatch a portion in the meantime.
+        // Advancing `tail` by the requested amount would expose unwritten slots, causing the next thief to read garbage data. Advance it by the actual amount instead.
         let moved = src.pop_batch_to(param);
         if moved < 1
         {
@@ -140,18 +140,17 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             }
 
             let take_cursor = cursor_data.tail.wrapping_sub(1);
-            let current = pack(cursor_data.tail, cursor_data.in_stealing);
-            let next = pack(take_cursor, cursor_data.in_stealing);
+            let current = pack(cursor_data.tail, cursor_data.blocked);
+            let next = pack(take_cursor, cursor_data.blocked);
 
             match self.anchor.compare_exchange_weak(current, next, Release, Acquire)
             {
-                // `tail` lùi rồi thì ô này nằm ngoài tầm mọi kẻ trộm, đọc thoải mái.
                 Ok(_) => return unsafe { Some(self.buffer.take_at(take_cursor)) },
                 Err(c) =>
                 {
                     let (tail, in_stealing) = unpack(c);
                     cursor_data.tail = tail;
-                    cursor_data.in_stealing = in_stealing;
+                    cursor_data.blocked = in_stealing;
                 }
             }
         }
@@ -182,7 +181,7 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             Some(r) => r,
             None => return 0,
         };
-        let claim_start = my_cursor_data.in_stealing;
+        let claim_start = my_cursor_data.blocked;
         for offset in 0..pop_amount
         {
             let cursor_idx = claim_start.wrapping_add(offset as u32);
@@ -217,11 +216,11 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             }
             cas_data.pop_amount = cas_data.pop_amount.min(filled_slots);
 
-            let current = pack(cas_data.cursor_data.tail, cas_data.cursor_data.in_stealing);
+            let current = pack(cas_data.cursor_data.tail, cas_data.cursor_data.blocked);
             let next = pack(
                 cas_data.cursor_data.tail,
                 // reserve a slot for the pop operation, creating a barrier for other consumers
-                cas_data.cursor_data.in_stealing.wrapping_add(cas_data.pop_amount as u32),
+                cas_data.cursor_data.blocked.wrapping_add(cas_data.pop_amount as u32),
             );
 
             match self.anchor.compare_exchange_weak(current, next, cas_data.success_order, cas_data.fail_order)
@@ -233,7 +232,7 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
                     // chỗ giữ cho `pop_amount` ở vòng sau không bao giờ ôm nhầm ô của chủ.
                     let (tail, in_stealing) = unpack(c);
                     cas_data.cursor_data.tail = tail;
-                    cas_data.cursor_data.in_stealing = in_stealing;
+                    cas_data.cursor_data.blocked = in_stealing;
                 }
             }
         }
@@ -271,11 +270,11 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
         let stolen = self.stolen.load(Acquire);
 
         CursorData {
-            stolen:      stolen,
-            in_stealing: in_stealing,
-            tail:        tail,
-            capacity:    self.buffer.capacity() as u32,
-            mask:        self.buffer.mask(),
+            stolen:   stolen,
+            blocked:  in_stealing,
+            tail:     tail,
+            capacity: self.buffer.capacity() as u32,
+            mask:     self.buffer.mask(),
         }
     }
 }
@@ -304,7 +303,7 @@ mod test
     fn cursors<T>(ring: &Ring<T>) -> (u32, u32, u32)
     {
         let c = ring.cursor_data();
-        (c.stolen, c.in_stealing, c.tail)
+        (c.stolen, c.blocked, c.tail)
     }
 
     /// Chạy `f` trên một thread khác rồi trả về thông điệp panic, hoặc `None` nếu chạy trót lọt.

@@ -141,7 +141,7 @@ impl<T> SpmcRingBufferFifo<T>
 
         self.try_cas_for_pop_batch(params)?;
 
-        let claim_start = cursor_data.in_stealing;
+        let claim_start = cursor_data.blocked;
         let result = unsafe { Some(self.buffer.take_at(claim_start)) };
 
         self.publish_stolen(claim_start, 1);
@@ -166,7 +166,7 @@ impl<T> SpmcRingBufferFifo<T>
             Some(r) => r,
             None => return 0,
         };
-        let claim_start = cursor_data.in_stealing;
+        let claim_start = cursor_data.blocked;
         for offset in 0..pop_amount
         {
             let cursor_idx = claim_start.wrapping_add(offset as u32);
@@ -194,7 +194,7 @@ impl<T> SpmcRingBufferFifo<T>
             Some(r) => r,
             None => return 0,
         };
-        let claim_start = cursor_data.in_stealing;
+        let claim_start = cursor_data.blocked;
         for offset in 0..pop_amount
         {
             let cursor_idx = claim_start.wrapping_add(offset as u32);
@@ -224,12 +224,12 @@ impl<T> SpmcRingBufferFifo<T>
             }
             cas_data.pop_amount = cas_data.pop_amount.min(filled_slots);
 
-            let current_head = pack(cas_data.cursor_data.stolen, cas_data.cursor_data.in_stealing);
+            let current_head = pack(cas_data.cursor_data.stolen, cas_data.cursor_data.blocked);
 
             let next_head = pack(
                 cas_data.cursor_data.stolen,
                 // reserve a slot for the pop operation, creating a barrier for other consumers
-                cas_data.cursor_data.in_stealing.wrapping_add(cas_data.pop_amount as u32),
+                cas_data.cursor_data.blocked.wrapping_add(cas_data.pop_amount as u32),
             );
 
             match self
@@ -242,7 +242,7 @@ impl<T> SpmcRingBufferFifo<T>
                     let tail = self.tail.load(cas_data.fetch_after_cas_order);
                     let (stolen, in_progress) = unpack(c);
                     cas_data.cursor_data.stolen = stolen;
-                    cas_data.cursor_data.in_stealing = in_progress;
+                    cas_data.cursor_data.blocked = in_progress;
                     cas_data.cursor_data.tail = tail;
                 }
             }
@@ -278,11 +278,11 @@ impl<T> SpmcRingBufferFifo<T>
         let tail = self.tail.load(Relaxed);
 
         CursorData {
-            stolen:      stolen,
-            in_stealing: in_progress,
-            tail:        tail,
-            capacity:    self.buffer.capacity() as u32,
-            mask:        self.buffer.mask(),
+            stolen:   stolen,
+            blocked:  in_progress,
+            tail:     tail,
+            capacity: self.buffer.capacity() as u32,
+            mask:     self.buffer.mask(),
         }
     }
 }

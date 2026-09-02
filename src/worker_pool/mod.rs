@@ -1,22 +1,21 @@
-use crate::sync::thread;
 use crate::utils::available_cores;
 use crate::utils::inline_fn::InlineFn;
+use crate::utils::queue_batching::QueueBatching;
 use crate::worker_pool::cfg::CfgWorkerPool;
 use crate::worker_pool::worker::Worker;
-use xynok_std::collection::Queue;
 
 pub mod cfg;
 pub mod identifies;
 
 pub(crate) mod worker;
-pub(crate) mod leader;
 pub(crate) mod thread_meta;
+pub(crate) mod local;
 
 pub struct WorkerPool
 {
     cfg:     CfgWorkerPool,
     workers: Vec<Worker>,
-    tasks:   Queue<InlineFn>,
+    tasks:   QueueBatching<InlineFn>,
 }
 
 impl WorkerPool
@@ -30,19 +29,24 @@ impl WorkerPool
             cfg.per_worker_task_capacity = cfg.per_worker_task_capacity.next_power_of_two().max(2);
         }
 
-        let tasks = Queue::with_capacity(cfg.task_capacity);
+        let tasks = QueueBatching::with_capacity(cfg.task_capacity);
         let workers_count = cfg.worker_capacity - 1;
         let mut workers = Vec::with_capacity(workers_count);
         for i in 0..workers_count
         {
             workers.push(create_a_worker(format!("{}.workers[{}]", cfg.name, i).as_str(), &cfg));
         }
-        Self { cfg: cfg, tasks, workers }
+        Self {
+            cfg: cfg,
+            tasks: tasks,
+            workers,
+        }
     }
 
+    #[inline]
     pub fn push(&mut self, task: InlineFn)
     {
-        self.tasks.enqueue(task);
+        self.tasks.push(task);
     }
 }
 

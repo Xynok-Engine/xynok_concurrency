@@ -110,20 +110,6 @@ impl<T> QueueBatching<T>
 
         let mut elements = self.get();
         elements.dequeue_batch(limit, out)
-        //out.reserve(limit.min(elements.len()));
-        //
-        //let mut taken = 0;
-        //while taken < limit
-        //{
-        //    let Some(value) = elements.dequeue()
-        //    else
-        //    {
-        //        break;
-        //    };
-        //    out.push(value);
-        //    taken += 1;
-        //}
-        //taken
     }
 
     #[inline]

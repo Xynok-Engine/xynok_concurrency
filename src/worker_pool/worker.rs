@@ -1,12 +1,12 @@
 use crate::collection::ring_buffer::spmc_fifo::SpmcRingBufferFifo;
 use crate::sync::thread::{self, JoinHandle};
 use crate::utils::inline_fn::InlineFn;
-use crate::worker_pool::thread_meta::ThreadData;
+use crate::worker_pool::thread_meta::WorkerData;
 use xynok_std::unsafe_ptr::HeapPtr;
 
 pub struct Worker
 {
-    pub meta_data: ThreadData,
+    pub meta_data: WorkerData,
     pub tasks:     HeapPtr<SpmcRingBufferFifo<InlineFn>>,
 }
 
@@ -17,7 +17,7 @@ impl Worker
     {
         let tasks = HeapPtr::new(SpmcRingBufferFifo::<InlineFn>::new(task_capacity));
         Self {
-            meta_data: ThreadData::new(handle),
+            meta_data: WorkerData::new(handle),
             tasks,
         }
     }

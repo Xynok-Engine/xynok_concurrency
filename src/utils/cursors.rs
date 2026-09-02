@@ -9,11 +9,11 @@
 #[derive(Clone, Copy)]
 pub struct CursorData
 {
-    pub stolen:      u32,
-    pub in_stealing: u32,
-    pub tail:        u32,
-    pub capacity:    u32,
-    pub mask:        u32,
+    pub stolen:   u32,
+    pub blocked:  u32,
+    pub tail:     u32,
+    pub capacity: u32,
+    pub mask:     u32,
 }
 
 impl CursorData
@@ -29,7 +29,7 @@ impl CursorData
     #[inline]
     pub fn filled_slots(&self) -> usize
     {
-        self.tail.wrapping_sub(self.in_stealing) as usize
+        self.tail.wrapping_sub(self.blocked) as usize
     }
 }
 #[cfg(test)]
