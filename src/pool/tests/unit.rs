@@ -4,6 +4,8 @@ use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::Duration;
 
 use super::*;
+use crate::sync::Mutex;
+use crate::utils::ignore_poison;
 
 /// Chạy `body` trên thread riêng, để một lần treo thành lỗi test thay vì treo cả lần chạy.
 ///

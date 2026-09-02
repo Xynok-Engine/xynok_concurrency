@@ -122,7 +122,8 @@ impl<T> QueueBatching<T>
         self.pop_batch(out, usize::MAX)
     }
 
-    /// Drains up to `max` elements and writes them directly into the `dst` ring buffer, starting at `write_start_cursor`. Returns the actual number of elements moved, which may be less than `max` if the queue is exhausted first.
+    /// Drains up to `max` elements and writes them directly into the `dst` ring buffer, starting at `write_start_cursor`.
+    /// Returns the actual number of elements moved, which may be less than `max` if the queue is exhausted first.
     #[inline]
     pub fn drain_into_buffer(&self, max: usize, dst: &FixedRingBuffer<T>, write_start_cursor: u32) -> usize
     {

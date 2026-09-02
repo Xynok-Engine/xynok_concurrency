@@ -50,6 +50,16 @@ impl<T> FixedRingBuffer<T>
         self.mask
     }
 
+    /// A pointer to the first memory cell, useful for prefetching or address comparison.
+    /// The buffer does not track which cells contain data, so avoid reading from or writing to this pointer unless you are certain the cell has been initialized via [`Self::write`].
+    /// The `loom` version lacks this function because `loom::cell::UnsafeCell` wraps additional metadata, meaning the memory layout no longer matches a standard `T` array.
+    #[cfg(not(loom))]
+    #[inline]
+    pub fn ptr(&self) -> *const T
+    {
+        self.cells.as_ptr().cast::<T>()
+    }
+
     #[inline]
     fn at(&self, cursor: u32) -> &UnsafeCell<MaybeUninit<T>>
     {
