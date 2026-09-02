@@ -1,8 +1,8 @@
 use std::fmt::{self, Debug, Display};
 
 use crate::sync::{AtomicU64, Ordering};
+use crate::utils::bits::{pack, unpack};
 use crate::utils::cache_padded::CachePadded;
-use crate::utils::{pack, unpack};
 
 pub struct Packed
 {
@@ -10,7 +10,21 @@ pub struct Packed
 }
 impl Packed
 {
+    /// Bản `const` cho build thường.
+    ///
+    /// Dưới loom thì không `const` được: atomic của loom mang theo cả phần ghi chép để mô hình soi
+    /// từng lần chạm, nên nó không dựng được lúc biên dịch. Hai chỗ gọi đều nằm trong hàm thường
+    /// nên mất `const` ở đây không ảnh hưởng gì.
+    #[cfg(not(loom))]
     pub const fn new(a: u32, b: u32) -> Self
+    {
+        Self {
+            packed: CachePadded::new(AtomicU64::new(pack(a, b))),
+        }
+    }
+
+    #[cfg(loom)]
+    pub fn new(a: u32, b: u32) -> Self
     {
         Self {
             packed: CachePadded::new(AtomicU64::new(pack(a, b))),

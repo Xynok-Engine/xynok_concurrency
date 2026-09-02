@@ -1,7 +1,7 @@
 use super::owner::Producer;
 use super::{RingBufferFifo, Steal};
 use crate::sync::Ordering;
-use crate::utils::{pack, unpack};
+use crate::utils::bits::{pack, unpack};
 
 pub struct Consumer<'a, T>
 {

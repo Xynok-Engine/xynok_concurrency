@@ -15,7 +15,7 @@ use crate::ring_buffer_spsc::RingBufferSpsc;
 
 /// Người đọc phải thấy đủ mọi phần tử, đúng thứ tự.
 #[test]
-fn khong_mat_phan_tu_va_khong_dao_thu_tu()
+fn t0_khong_mat_phan_tu_va_khong_dao_thu_tu()
 {
     loom::model(|| {
         const TOTAL: u32 = 3;
@@ -59,7 +59,7 @@ fn khong_mat_phan_tu_va_khong_dao_thu_tu()
 /// Mỗi phần tử mang một dấu cố định ở nửa cao và chỉ số ở nửa thấp, nên đọc phải một ô chưa ghi
 /// xong là lộ ra ngay, chứ không lẫn vào một giá trị hợp lệ nào khác.
 #[test]
-fn noi_dung_o_hien_ra_cung_luc_voi_chi_so()
+fn t1_noi_dung_o_hien_ra_cung_luc_voi_chi_so()
 {
     loom::model(|| {
         const TOTAL: u64 = 2;
@@ -106,7 +106,7 @@ fn noi_dung_o_hien_ra_cung_luc_voi_chi_so()
 /// Ring hai ô và bốn phần tử: người ghi buộc phải quay lại đúng những ô cũ, nên nếu nó đọc `head`
 /// quá sớm thì nó ghi đè, và người đọc sẽ thấy một giá trị của tương lai.
 #[test]
-fn nguoi_ghi_khong_de_len_o_nguoi_doc_chua_lay()
+fn t2_nguoi_ghi_khong_de_len_o_nguoi_doc_chua_lay()
 {
     loom::model(|| {
         const TOTAL: u32 = 4;

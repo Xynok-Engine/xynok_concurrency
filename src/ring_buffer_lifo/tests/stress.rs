@@ -1,9 +1,9 @@
-use super::*;
-use crate::sync::AtomicBool;
+use crate::ring_buffer_lifo::{RingBufferLifo, Steal};
+use crate::sync::{AtomicBool, Ordering};
 use crate::utils::backoff::Backoff;
 
 #[test]
-fn mot_nguoi_ghi_ba_ke_trom_khong_mat_khong_nhan_doi()
+fn t0_mot_nguoi_ghi_ba_ke_trom_khong_mat_khong_nhan_doi()
 {
     #[cfg(not(miri))]
     const TOTAL: u32 = 20_000;
@@ -103,7 +103,7 @@ fn mot_nguoi_ghi_ba_ke_trom_khong_mat_khong_nhan_doi()
 }
 
 #[test]
-fn chu_va_trom_gianh_job_cuoi_cung()
+fn t1_chu_va_trom_gianh_job_cuoi_cung()
 {
     #[cfg(not(miri))]
     const ROUNDS: u32 = 20_000;
@@ -168,7 +168,7 @@ fn chu_va_trom_gianh_job_cuoi_cung()
 }
 
 #[test]
-fn ring_bon_o_hai_ke_trom_khong_dam_du_lieu()
+fn t2_ring_bon_o_hai_ke_trom_khong_dam_du_lieu()
 {
     const TOTAL: u32 = 96;
     const THIEVES: usize = 2;

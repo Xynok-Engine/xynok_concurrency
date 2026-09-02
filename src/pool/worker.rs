@@ -9,6 +9,7 @@ use crate::utils::backoff::Backoff;
 use super::context::{CONTEXT, Context};
 use super::shared::Shared;
 use super::sleep::Wake;
+use super::sleep::params::ParamsPark;
 
 #[cfg(doc)] use super::ThreadPool;
 
@@ -123,14 +124,19 @@ pub(super) fn worker_loop(shared: Arc<Shared>, index: usize)
         }
 
         shared.counters.of(index).park();
-        if let Some(sink) = crate::profile::sink()
+        if let Some(sink) = crate::profile::current_sink()
         {
             sink.worker_park(index);
         }
 
-        let wake = shared.sleep.park(index, is_searching, seen, || shared.has_work());
+        let wake = shared.sleep.park(ParamsPark {
+            index:        index,
+            is_searching: is_searching,
+            seen:         seen,
+            recheck:      || shared.has_work(),
+        });
 
-        if let Some(sink) = crate::profile::sink()
+        if let Some(sink) = crate::profile::current_sink()
         {
             sink.worker_unpark(index);
         }

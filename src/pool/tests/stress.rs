@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use super::*;
+use crate::pool::{Config, ThreadPool};
 
 /// Trần cứng cho mọi lần chờ trong file này.
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -50,7 +50,7 @@ impl Rng
 }
 
 #[test]
-fn nhieu_thread_ngoai_cung_day_viec_thi_khong_mat_job_nao()
+fn t0_nhieu_thread_ngoai_cung_day_viec_thi_khong_mat_job_nao()
 {
     const FEEDERS: usize = 4;
     const PER_FEEDER: usize = 5_000;
@@ -98,7 +98,7 @@ fn nhieu_thread_ngoai_cung_day_viec_thi_khong_mat_job_nao()
 }
 
 #[test]
-fn job_de_job_con_nhieu_tang_thi_khong_job_nao_bi_bo_lai()
+fn t1_job_de_job_con_nhieu_tang_thi_khong_job_nao_bi_bo_lai()
 {
     /// Mỗi job đẻ ra `FANOUT` job con cho tới khi hết tầng.
     const FANOUT: usize = 3;
@@ -149,7 +149,7 @@ fn job_de_job_con_nhieu_tang_thi_khong_job_nao_bi_bo_lai()
 }
 
 #[test]
-fn tung_dot_viec_xen_ke_luc_ngu_luc_thuc()
+fn t2_tung_dot_viec_xen_ke_luc_ngu_luc_thuc()
 {
     const ROUNDS: usize = 200;
     const PER_ROUND: usize = 64;
@@ -185,7 +185,7 @@ fn tung_dot_viec_xen_ke_luc_ngu_luc_thuc()
 }
 
 #[test]
-fn moi_job_chay_dung_mot_lan_va_dung_mot_worker()
+fn t3_moi_job_chay_dung_mot_lan_va_dung_mot_worker()
 {
     const JOBS: usize = 20_000;
 
@@ -222,7 +222,7 @@ fn moi_job_chay_dung_mot_lan_va_dung_mot_worker()
 }
 
 #[test]
-fn dung_pool_giua_luc_dang_bon_viec_van_khong_bo_job_nao()
+fn t4_dung_pool_giua_luc_dang_bon_viec_van_khong_bo_job_nao()
 {
     const ROUNDS: usize = 20;
     const JOBS: usize = 2_000;

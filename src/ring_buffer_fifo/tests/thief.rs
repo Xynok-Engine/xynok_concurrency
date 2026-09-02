@@ -1,8 +1,9 @@
-use super::*;
-use crate::ring_buffer_fifo::RingBufferFifo;
+use crate::ring_buffer_fifo::{RingBufferFifo, Steal};
+use crate::sync::Ordering;
+use crate::utils::bits::unpack;
 
 #[test]
-fn go_bien_keo_steal_len_bang_real_hien_tai()
+fn t0_go_bien_keo_steal_len_bang_real_hien_tai()
 {
     let ring = RingBufferFifo::<u32>::new(8);
     let mut tx = unsafe { ring.producer() };
@@ -31,7 +32,7 @@ fn go_bien_keo_steal_len_bang_real_hien_tai()
 }
 
 #[test]
-fn claim_khong_nhan_gi_khi_max_bang_khong()
+fn t1_claim_khong_nhan_gi_khi_max_bang_khong()
 {
     let ring = RingBufferFifo::<u32>::new(4);
     let mut tx = unsafe { ring.producer() };

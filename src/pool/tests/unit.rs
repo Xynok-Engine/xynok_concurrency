@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::Duration;
 
-use super::*;
+use crate::pool::{Config, ThreadPool};
 use crate::sync::Mutex;
-use crate::utils::ignore_poison;
+use crate::utils::poison::ignore_poison;
 
 /// Chạy `body` trên thread riêng, để một lần treo thành lỗi test thay vì treo cả lần chạy.
 ///
@@ -58,9 +58,9 @@ fn pool_with(threads: usize) -> ThreadPool
 }
 
 #[test]
-fn moi_job_deu_chay_dung_mot_lan()
+fn t0_moi_job_deu_chay_dung_mot_lan()
 {
-    with_watchdog("moi_job_deu_chay_dung_mot_lan", || {
+    with_watchdog("t0_moi_job_deu_chay_dung_mot_lan", || {
         let jobs = scaled(10_000);
 
         let pool = pool_with(4);
@@ -80,7 +80,7 @@ fn moi_job_deu_chay_dung_mot_lan()
 }
 
 #[test]
-fn khong_co_worker_thi_job_chay_ngay_tai_cho()
+fn t1_khong_co_worker_thi_job_chay_ngay_tai_cho()
 {
     let pool = ThreadPool::new(Config::inline());
     assert_eq!(pool.worker_threads(), 0);
@@ -103,9 +103,9 @@ fn khong_co_worker_thi_job_chay_ngay_tai_cho()
 }
 
 #[test]
-fn job_de_ra_job_con_thi_cay_chay_het()
+fn t2_job_de_ra_job_con_thi_cay_chay_het()
 {
-    with_watchdog("job_de_ra_job_con_thi_cay_chay_het", || {
+    with_watchdog("t2_job_de_ra_job_con_thi_cay_chay_het", || {
         /// Cây nhị phân sâu 10 tầng: 1023 node, và mỗi node spawn từ trong một job.
         #[cfg(not(miri))]
         const DEPTH: usize = 10;
@@ -142,9 +142,9 @@ fn job_de_ra_job_con_thi_cay_chay_het()
 }
 
 #[test]
-fn job_tu_thread_ngoai_pool_van_toi_duoc_worker()
+fn t3_job_tu_thread_ngoai_pool_van_toi_duoc_worker()
 {
-    with_watchdog("job_tu_thread_ngoai_pool_van_toi_duoc_worker", || {
+    with_watchdog("t3_job_tu_thread_ngoai_pool_van_toi_duoc_worker", || {
         let jobs = scaled(2_000);
 
         let pool = Arc::new(pool_with(3));
@@ -172,9 +172,9 @@ fn job_tu_thread_ngoai_pool_van_toi_duoc_worker()
 }
 
 #[test]
-fn ring_day_thi_job_tran_xuong_lane_queue_chu_khong_mat()
+fn t4_ring_day_thi_job_tran_xuong_lane_queue_chu_khong_mat()
 {
-    with_watchdog("ring_day_thi_job_tran_xuong_lane_queue_chu_khong_mat", || {
+    with_watchdog("t4_ring_day_thi_job_tran_xuong_lane_queue_chu_khong_mat", || {
         // Ring bé xíu so với số job: mọi job sau ô thứ tư đều phải đi đường xả.
         let jobs = scaled(5_000);
 
@@ -199,9 +199,9 @@ fn ring_day_thi_job_tran_xuong_lane_queue_chu_khong_mat()
 }
 
 #[test]
-fn shutdown_chay_not_phan_con_xep_hang()
+fn t5_shutdown_chay_not_phan_con_xep_hang()
 {
-    with_watchdog("shutdown_chay_not_phan_con_xep_hang", || {
+    with_watchdog("t5_shutdown_chay_not_phan_con_xep_hang", || {
         let jobs = scaled(1_000);
 
         let done = Arc::new(AtomicUsize::new(0));
@@ -223,9 +223,9 @@ fn shutdown_chay_not_phan_con_xep_hang()
 }
 
 #[test]
-fn tha_tay_cam_cuoi_cung_cung_tat_pool()
+fn t6_tha_tay_cam_cuoi_cung_cung_tat_pool()
 {
-    with_watchdog("tha_tay_cam_cuoi_cung_cung_tat_pool", || {
+    with_watchdog("t6_tha_tay_cam_cuoi_cung_cung_tat_pool", || {
         let done = Arc::new(AtomicUsize::new(0));
         {
             let pool = pool_with(2);
@@ -243,9 +243,9 @@ fn tha_tay_cam_cuoi_cung_cung_tat_pool()
 }
 
 #[test]
-fn shutdown_goi_nhieu_lan_khong_sao()
+fn t7_shutdown_goi_nhieu_lan_khong_sao()
 {
-    with_watchdog("shutdown_goi_nhieu_lan_khong_sao", || {
+    with_watchdog("t7_shutdown_goi_nhieu_lan_khong_sao", || {
         let pool = pool_with(2);
         pool.shutdown();
         pool.shutdown();
@@ -254,9 +254,9 @@ fn shutdown_goi_nhieu_lan_khong_sao()
 }
 
 #[test]
-fn mot_job_panic_khong_giet_pool()
+fn t8_mot_job_panic_khong_giet_pool()
 {
-    with_watchdog("mot_job_panic_khong_giet_pool", || {
+    with_watchdog("t8_mot_job_panic_khong_giet_pool", || {
         let pool = pool_with(2);
         let done = Arc::new(AtomicUsize::new(0));
 
@@ -281,9 +281,9 @@ fn mot_job_panic_khong_giet_pool()
 }
 
 #[test]
-fn moi_nguoi_tham_gia_co_mot_chi_so_rieng()
+fn t9_moi_nguoi_tham_gia_co_mot_chi_so_rieng()
 {
-    with_watchdog("moi_nguoi_tham_gia_co_mot_chi_so_rieng", || {
+    with_watchdog("t9_moi_nguoi_tham_gia_co_mot_chi_so_rieng", || {
         const WORKERS: usize = 4;
 
         let pool = Arc::new(pool_with(WORKERS));
@@ -321,7 +321,7 @@ fn moi_nguoi_tham_gia_co_mot_chi_so_rieng()
 
 #[test]
 #[should_panic(expected = "không phải worker của pool này")]
-fn chi_so_worker_cua_thread_la_thi_panic()
+fn t10_chi_so_worker_cua_thread_la_thi_panic()
 {
     let pool = Arc::new(pool_with(1));
     let foreign = Arc::clone(&pool);
@@ -335,9 +335,9 @@ fn chi_so_worker_cua_thread_la_thi_panic()
 }
 
 #[test]
-fn worker_ngu_roi_van_thuc_day_khi_co_viec_moi()
+fn t11_worker_ngu_roi_van_thuc_day_khi_co_viec_moi()
 {
-    with_watchdog("worker_ngu_roi_van_thuc_day_khi_co_viec_moi", || {
+    with_watchdog("t11_worker_ngu_roi_van_thuc_day_khi_co_viec_moi", || {
         let pool = pool_with(4);
 
         for round in 0..scaled(50)
@@ -361,9 +361,9 @@ fn worker_ngu_roi_van_thuc_day_khi_co_viec_moi()
 }
 
 #[test]
-fn cho_bang_run_until_thi_thread_goi_cung_chay_job()
+fn t12_cho_bang_run_until_thi_thread_goi_cung_chay_job()
 {
-    with_watchdog("cho_bang_run_until_thi_thread_goi_cung_chay_job", || {
+    with_watchdog("t12_cho_bang_run_until_thi_thread_goi_cung_chay_job", || {
         // Một worker duy nhất, và một job "chốt chặn" chỉ thoát khi đủ 500 job kia đã chạy xong.
         //
         // Ai bốc phải chốt chặn cũng được, và đó chính là chỗ hay: người còn lại buộc phải chạy 500
@@ -396,9 +396,9 @@ fn cho_bang_run_until_thi_thread_goi_cung_chay_job()
 }
 
 #[test]
-fn lane_queue_khong_bi_bo_doi_khi_worker_tu_nuoi_minh()
+fn t13_lane_queue_khong_bi_bo_doi_khi_worker_tu_nuoi_minh()
 {
-    with_watchdog("lane_queue_khong_bi_bo_doi_khi_worker_tu_nuoi_minh", || {
+    with_watchdog("t13_lane_queue_khong_bi_bo_doi_khi_worker_tu_nuoi_minh", || {
         // Một worker duy nhất, và nó có một chuỗi job tự đẻ ra nhau không dứt. Job mà thread ngoài
         // đẩy vào lane queue phải chạy được trong thời gian hữu hạn, đó là toàn bộ việc của luật
         // `LANE_QUEUE_TICK`.
@@ -445,9 +445,9 @@ fn lane_queue_khong_bi_bo_doi_khi_worker_tu_nuoi_minh()
 }
 
 #[test]
-fn arena_nhap_rieng_cho_tung_nguoi_tham_gia()
+fn t14_arena_nhap_rieng_cho_tung_nguoi_tham_gia()
 {
-    with_watchdog("arena_nhap_rieng_cho_tung_nguoi_tham_gia", || {
+    with_watchdog("t14_arena_nhap_rieng_cho_tung_nguoi_tham_gia", || {
         let pool = ThreadPool::new(Config {
             threads: 3,
             scratch_bytes: 4 << 10,
@@ -489,7 +489,7 @@ fn arena_nhap_rieng_cho_tung_nguoi_tham_gia()
 }
 
 #[test]
-fn end_frame_giua_luc_dang_muon_arena_thi_panic()
+fn t15_end_frame_giua_luc_dang_muon_arena_thi_panic()
 {
     let pool = ThreadPool::new(Config {
         threads: 1,
@@ -504,9 +504,9 @@ fn end_frame_giua_luc_dang_muon_arena_thi_panic()
 }
 
 #[test]
-fn bo_dem_ghi_lai_dung_so_job_da_chay()
+fn t16_bo_dem_ghi_lai_dung_so_job_da_chay()
 {
-    with_watchdog("bo_dem_ghi_lai_dung_so_job_da_chay", || {
+    with_watchdog("t16_bo_dem_ghi_lai_dung_so_job_da_chay", || {
         let jobs = scaled(2_000) as u64;
 
         let pool = pool_with(3);
@@ -537,9 +537,9 @@ fn bo_dem_ghi_lai_dung_so_job_da_chay()
 }
 
 #[test]
-fn bo_dem_thay_duoc_lan_xa_khi_ring_qua_be()
+fn t17_bo_dem_thay_duoc_lan_xa_khi_ring_qua_be()
 {
-    with_watchdog("bo_dem_thay_duoc_lan_xa_khi_ring_qua_be", || {
+    with_watchdog("t17_bo_dem_thay_duoc_lan_xa_khi_ring_qua_be", || {
         let jobs = scaled(3_000);
 
         let pool = ThreadPool::new(Config {
@@ -567,16 +567,16 @@ fn bo_dem_thay_duoc_lan_xa_khi_ring_qua_be()
 
 #[test]
 #[should_panic(expected = "nằm ngoài pool")]
-fn bo_dem_cua_chi_so_khong_ton_tai_thi_panic()
+fn t18_bo_dem_cua_chi_so_khong_ton_tai_thi_panic()
 {
     let pool = pool_with(1);
     let _ = pool.counters_of(99);
 }
 
 #[test]
-fn tha_tay_cam_cuoi_cung_tu_trong_mot_job()
+fn t19_tha_tay_cam_cuoi_cung_tu_trong_mot_job()
 {
-    with_watchdog("tha_tay_cam_cuoi_cung_tu_trong_mot_job", || {
+    with_watchdog("t19_tha_tay_cam_cuoi_cung_tu_trong_mot_job", || {
         // Một job giữ tay cầm pool, và nó tình cờ là kẻ thả cái cuối cùng. Không ai cố ý viết ra
         // cảnh này, nhưng chỉ cần một `Arc<ThreadPool>` bị bắt vào closure là dính, và trước khi
         // `Owner::stop` biết nhìn xem mình đang đứng ở đâu thì đây là một lần join chính mình, tức

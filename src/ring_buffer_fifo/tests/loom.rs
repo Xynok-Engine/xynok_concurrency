@@ -1,7 +1,7 @@
-use super::*;
+use crate::ring_buffer_fifo::RingBufferFifo;
 
 #[test]
-fn chu_va_trom_cung_an_mot_dau_khong_ai_lay_trung()
+fn t0_chu_va_trom_cung_an_mot_dau_khong_ai_lay_trung()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferFifo::<u32>::new(2));
@@ -28,7 +28,7 @@ fn chu_va_trom_cung_an_mot_dau_khong_ai_lay_trung()
 }
 
 #[test]
-fn trom_thay_tail_moi_thi_thay_ca_job()
+fn t1_trom_thay_tail_moi_thi_thay_ca_job()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferFifo::<u32>::new(2));
@@ -50,7 +50,7 @@ fn trom_thay_tail_moi_thi_thay_ca_job()
     });
 }
 #[test]
-fn chu_khong_ghi_de_len_o_ke_trom_dang_be()
+fn t2_chu_khong_ghi_de_len_o_ke_trom_dang_be()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferFifo::<u32>::new(2));

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use super::RingBufferFifo;
 use crate::sync::Ordering;
-use crate::utils::{pack, unpack};
+use crate::utils::bits::{pack, unpack};
 
 pub struct Producer<'a, T>
 {

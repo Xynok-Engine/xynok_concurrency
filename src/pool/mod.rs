@@ -1,74 +1,73 @@
-//! Pool work-stealing của một lane: N thread worker, mỗi thread một ring, một hàng đợi chung.
+//! ## Pool trộm việc của một lane
 //!
-//! Đọc [`docs_internal/lanes.md`](../../docs_internal/lanes.md) để biết vì sao engine chỉ có một
-//! pool cho toàn bộ việc CPU-bound thay vì mỗi hệ thống một pool. Ở đây chỉ nói cách pool chạy.
+//! N thread worker, mỗi thread một ring riêng, cộng một hàng đợi dùng chung.
 //!
-//! # Một job đi đường nào
+//! ### Giải quyết chuyện gì
+//!
+//! Cả engine chỉ có một pool cho toàn bộ việc nặng CPU, thay vì mỗi hệ thống một pool. Lý do là
+//! việc trộm việc chỉ có nghĩa khi số worker xấp xỉ số core: chia nhỏ thành nhiều pool thì trong
+//! lúc pool này chạy, các core của pool kia ngồi không.
+//!
+//! ### Một việc đi đường nào
 //!
 //! ```text
-//!   spawn từ trong một job         spawn từ ngoài pool
+//!   giao từ trong một việc         giao từ ngoài pool
 //!            │                              │
 //!            ▼                              ▼
-//!      ô LIFO của worker              lane queue (dùng chung)
+//!      ô nóng của worker              hàng đợi chung
 //!            │  (đầy thì đẩy xuống)         │
 //!            ▼                              │
-//!      ring local của worker  ◀─────────────┘  nạp cả cụm khi worker ngó tới
-//!            │  (đầy thì spill nửa cũ xuống lane queue)
+//!      ring riêng của worker  ◀─────────────┘  nạp cả cụm khi worker ngó tới
+//!            │  (đầy thì xả nửa cũ xuống hàng đợi chung)
 //!            ▼
 //!      kẻ trộm bốc lô từ đầu ring
 //! ```
 //!
-//! Ô LIFO giữ đúng một job: job vừa spawn ra thường là job mà cache của chính thread này còn nóng
-//! nhất, nên chạy nó ngay là rẻ nhất. Ring local giữ phần còn lại và cho người khác trộm. Lane
-//! queue hứng mọi thứ tràn ra, và là chỗ duy nhất thread ngoài pool đẩy job vào được.
+//! **Ô nóng** giữ đúng một việc: việc vừa được đẻ ra thường là việc mà cache của chính thread này
+//! còn nóng nhất, nên chạy nó ngay là rẻ nhất.
 //!
-//! # Vòng tìm việc của một worker
+//! **Ring riêng** giữ phần còn lại và cho người khác trộm. Chủ ring lấy từ một đầu, kẻ trộm bốc từ
+//! đầu kia, nên hai bên gần như không giẫm lên nhau.
+//!
+//! **Hàng đợi chung** hứng mọi thứ tràn ra, và là chỗ duy nhất thread ngoài pool đẩy việc vào được.
+//!
+//! ### Vòng tìm việc của một worker
 //!
 //! ```text
-//!  1. ô LIFO         job vừa spawn, nóng nhất
-//!  2. ring local     việc của chính mình
-//!  3. lane queue     việc từ ngoài, và việc bị xả ra
-//!  4. trộm           đắt: phải CAS vào ring người khác
-//!  5. lane queue     ngó lần cuối trước khi ngủ
+//!  1. ô nóng           việc vừa đẻ, nóng nhất
+//!  2. ring riêng       việc của chính mình
+//!  3. hàng đợi chung   việc từ ngoài, và việc bị xả ra
+//!  4. trộm             đắt: phải giành với chủ ring người khác
+//!  5. hàng đợi chung   ngó lần cuối trước khi ngủ
 //!  6. ngủ
 //! ```
 //!
-//! Cứ [`LANE_QUEUE_TICK`] vòng thì bước 3 được kéo lên trước bước 1. Không có luật đó thì một
-//! worker mà job của nó cứ đẻ job con sẽ tự nuôi mình mãi mãi, và job của thread ngoài nằm trong
-//! lane queue có thể chờ rất lâu dù pool nhìn từ ngoài vẫn "đang chạy".
+//! ### Vì sao thỉnh thoảng phải ngó hàng đợi chung trước
+//!
+//! Cứ vài chục vòng thì bước ngó hàng đợi chung được kéo lên trước cả ô nóng. Không có luật đó thì
+//! một worker mà việc của nó cứ đẻ việc con sẽ tự nuôi mình mãi mãi, và việc của thread ngoài nằm
+//! trong hàng đợi chung có thể chờ rất lâu dù pool nhìn từ ngoài vẫn "đang chạy".
+//!
+//! > [!NOTE]
+//! > Thread nào gọi vào pool cũng trở thành một người tham gia, chứ không đứng ngoài nhìn. Chờ ở
+//! > đây nghĩa là chạy việc giúp, nên một điểm hẹn không bao giờ bỏ phí một core.
 
-use std::time::Duration;
-
+pub mod config;
+pub mod consts;
+pub mod context;
 pub mod counters;
+pub mod local;
+pub mod owner;
+pub mod shared;
 pub mod sleep;
-
-mod config;
-mod context;
-mod local;
-mod owner;
-mod shared;
-mod thread_pool;
-mod worker;
+pub mod thread_pool;
+pub mod worker;
 
 pub use config::Config;
+pub use consts::LANE_QUEUE_TICK;
 pub use thread_pool::ThreadPool;
 
 pub(crate) use shared::Shared;
-
-#[cfg(doc)] use crate::utils::backoff::Backoff;
-
-/// Cứ bấy nhiêu vòng thì worker ngó lane queue trước cả ring của mình.
-///
-/// Số nguyên tố, và không phải để cho đẹp: một hằng chia hết cho số worker, hoặc chia hết cho nhịp
-/// đẻ job của một thuật toán chia đôi, sẽ khiến nhiều worker cùng ngó lane queue đúng một lúc rồi
-/// cùng giành một cái khoá. Số nguyên tố đủ lớn thì các worker rải đều ra.
-pub const LANE_QUEUE_TICK: u32 = 61;
-
-/// Một giấc ngủ ngắn của thread đang chờ ở [`ThreadPool::run_until`] mà pool thì hết việc.
-///
-/// Ngắn có chủ ý: nó là hạn chót cho trường hợp xấu nhất, tức là khi thứ đang được chờ hoàn thành
-/// mà không gọi ai dậy. Đường bình thường thì [`Latch`](crate::latch::Latch) gọi dậy ngay.
-const IDLE_NAP: Duration = Duration::from_micros(50);
 
 #[cfg(all(test, not(loom)))]
 #[path = "tests/unit.rs"]

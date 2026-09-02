@@ -10,12 +10,12 @@ use crate::sync::thread::{self, ThreadId};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 
+use super::consts::{IDLE_NAP, LANE_QUEUE_TICK};
 use super::context::{CONTEXT, Context, SELF_ID};
 use super::counters::PoolCounters;
 use super::local::Local;
 use super::sleep::Sleep;
 use super::worker::{run_in_loop, run_job};
-use super::{IDLE_NAP, LANE_QUEUE_TICK};
 
 #[cfg(doc)] use super::ThreadPool;
 

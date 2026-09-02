@@ -1,7 +1,7 @@
-use super::*;
+use crate::ring_buffer_spsc::{MAX_SLOTS, Receiver, RingBufferSpsc, Sender};
 
 #[test]
-fn suc_chua_lam_tron_len_luy_thua_hai()
+fn t0_suc_chua_lam_tron_len_luy_thua_hai()
 {
     assert_eq!(RingBufferSpsc::<u8>::new(0).capacity(), 2);
     assert_eq!(RingBufferSpsc::<u8>::new(3).capacity(), 4);
@@ -10,13 +10,13 @@ fn suc_chua_lam_tron_len_luy_thua_hai()
 
 #[test]
 #[should_panic(expected = "2^31")]
-fn suc_chua_vuot_tran_thi_panic()
+fn t1_suc_chua_vuot_tran_thi_panic()
 {
     let _ = RingBufferSpsc::<u8>::new(MAX_SLOTS + 1);
 }
 
 #[test]
-fn hai_dau_co_dung_bo_trait_can_thiet()
+fn t2_hai_dau_co_dung_bo_trait_can_thiet()
 {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
@@ -28,7 +28,7 @@ fn hai_dau_co_dung_bo_trait_can_thiet()
 }
 
 #[test]
-fn ra_dung_thu_tu_vao()
+fn t3_ra_dung_thu_tu_vao()
 {
     let mut ring = RingBufferSpsc::new(8);
     let (mut tx, mut rx) = ring.split();
@@ -46,7 +46,7 @@ fn ra_dung_thu_tu_vao()
 }
 
 #[test]
-fn day_thi_tra_lai_chu_khong_nuot()
+fn t4_day_thi_tra_lai_chu_khong_nuot()
 {
     let mut ring = RingBufferSpsc::new(4);
     let (mut tx, mut rx) = ring.split();
@@ -61,7 +61,7 @@ fn day_thi_tra_lai_chu_khong_nuot()
 }
 
 #[test]
-fn push_iter_chi_nhan_phan_vua()
+fn t5_push_iter_chi_nhan_phan_vua()
 {
     let mut ring = RingBufferSpsc::new(4);
     let (mut tx, mut rx) = ring.split();
@@ -75,7 +75,7 @@ fn push_iter_chi_nhan_phan_vua()
 }
 
 #[test]
-fn pop_batch_lay_dung_so_luong_xin()
+fn t6_pop_batch_lay_dung_so_luong_xin()
 {
     let mut ring = RingBufferSpsc::new(16);
     let (mut tx, mut rx) = ring.split();
@@ -94,7 +94,7 @@ fn pop_batch_lay_dung_so_luong_xin()
 }
 
 #[test]
-fn chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
+fn t7_chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
 {
     let mut ring = RingBufferSpsc::new(4);
     let (mut tx, mut rx) = ring.split();
@@ -110,7 +110,7 @@ fn chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
 }
 
 #[test]
-fn rong_thi_pop_tra_none_chu_khong_quay()
+fn t8_rong_thi_pop_tra_none_chu_khong_quay()
 {
     let mut ring = RingBufferSpsc::<u32>::new(8);
     let (_tx, mut rx) = ring.split();
@@ -121,7 +121,7 @@ fn rong_thi_pop_tra_none_chu_khong_quay()
 }
 
 #[test]
-fn drop_tha_moi_phan_tu_chua_doc()
+fn t9_drop_tha_moi_phan_tu_chua_doc()
 {
     use std::sync::Arc;
 
@@ -146,7 +146,7 @@ fn drop_tha_moi_phan_tu_chua_doc()
 }
 
 #[test]
-fn lenh_am_thanh_di_qua_dung_nguyen_ven()
+fn t10_lenh_am_thanh_di_qua_dung_nguyen_ven()
 {
     // Đúng hình dạng mà thread audio sẽ thấy: lane A đẩy lệnh, callback vét sạch một lượt.
     #[derive(Debug, Clone, Copy, PartialEq)]

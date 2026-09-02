@@ -15,6 +15,7 @@
 //! dưới loom thì nó chạy tới sáng cũng không xong, và bản thân vòng lặp worker cũng phải có **trần
 //! cứng** chứ không được lặp tự do vì cùng lý do đó. Phần đáng ngờ thì vẫn nằm trọn trong `Sleep`.
 
+use crate::pool::sleep::params::ParamsPark;
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::thread;
@@ -114,7 +115,12 @@ fn worker(sleep: &Sleep, work: &Arc<Work>, index: usize) -> bool
         parks += 1;
 
         let work_for_recheck = Arc::clone(work);
-        match sleep.park(index, is_searching, seen, move || work_for_recheck.has_work())
+        match sleep.park(ParamsPark {
+            index:        index,
+            is_searching: is_searching,
+            seen:         seen,
+            recheck:      move || work_for_recheck.has_work(),
+        })
         {
             Wake::Notified => is_searching = true,
             Wake::Cancelled => is_searching = false,
@@ -127,7 +133,7 @@ fn worker(sleep: &Sleep, work: &Arc<Work>, index: usize) -> bool
 /// Đây là hình dạng nhỏ nhất của lỗi mất wake-up: worker quyết định ngủ dựa trên thứ nó thấy trước
 /// đó, còn job thì tới ngay sau cái nhìn ấy. Cũng chính là mô hình đã bắt được lỗi thật.
 #[test]
-fn mot_job_khong_bao_gio_ngu_quen_tren_mot_worker()
+fn t0_mot_job_khong_bao_gio_ngu_quen_tren_mot_worker()
 {
     loom::model(|| {
         let sleep = Arc::new(Sleep::new(1));
@@ -152,7 +158,7 @@ fn mot_job_khong_bao_gio_ngu_quen_tren_mot_worker()
 /// Hai job cho hai worker nên ai cũng có phần: worker nào ngủ mà không dậy thì đó là lỗi thật, chứ
 /// không phải chuyện "hết việc rồi thì ngủ là đúng".
 #[test]
-fn hai_job_hai_worker_khong_ai_ngu_quen()
+fn t1_hai_job_hai_worker_khong_ai_ngu_quen()
 {
     loom::model(|| {
         let sleep = Arc::new(Sleep::new(2));
@@ -187,7 +193,7 @@ fn hai_job_hai_worker_khong_ai_ngu_quen()
 /// Khác test đầu ở chỗ worker được thả ra trước, nên người đẩy job rơi vào đủ mọi vị trí trong
 /// trình tự "ghi tên, rời hàng ngũ, ngó lại, ngủ".
 #[test]
-fn job_toi_giua_luc_worker_dang_di_ngu()
+fn t2_job_toi_giua_luc_worker_dang_di_ngu()
 {
     loom::model(|| {
         let sleep = Arc::new(Sleep::new(1));
@@ -216,7 +222,7 @@ fn job_toi_giua_luc_worker_dang_di_ngu()
 /// sách rồi `unpark`, còn `Cancelled` là thấy bộ đếm sự kiện đã nhích nên tự rút tên ra trước khi
 /// kịp ngủ. Cái sau còn rẻ hơn, vì không tốn một lần park rồi dậy ngay.
 #[test]
-fn notify_all_khong_bo_sot_ai()
+fn t3_notify_all_khong_bo_sot_ai()
 {
     loom::model(|| {
         let sleep = Arc::new(Sleep::new(1));
@@ -226,7 +232,12 @@ fn notify_all_khong_bo_sot_ai()
         let worker_woken = Arc::clone(&woken);
         let handle = thread::spawn(move || {
             let seen = worker_sleep.events();
-            worker_sleep.park(0, false, seen, || false);
+            worker_sleep.park(ParamsPark {
+                index:        0,
+                is_searching: false,
+                seen:         seen,
+                recheck:      || false,
+            });
             worker_woken.fetch_add(1, Ordering::AcqRel);
         });
 
@@ -249,7 +260,7 @@ fn notify_all_khong_bo_sot_ai()
 /// ra để cắt. Nhưng nó chạm cùng ô `state` như mọi phía khác, nên thứ đáng kiểm ở đây không phải là
 /// nó nhanh hơn: là nó không mở lại kẽ hở mất wake-up mà `notify` đã bịt.
 #[test]
-fn notify_many_khong_bo_sot_ai()
+fn t4_notify_many_khong_bo_sot_ai()
 {
     // Hai worker cùng ngủ rồi cùng được gọi dậy là mô hình lớn nhất trong file này, và để loom chạy
     // hết mọi interleaving của nó thì phải tính bằng giờ. Chặn số lần cắt ngang lại là cách loom

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use super::*;
+use crate::ring_buffer_spsc::RingBufferSpsc;
 use crate::sync::{AtomicBool, Ordering as SyncOrdering};
 
 /// Trần cứng cho mọi vòng chờ ở đây. Một ring hỏng thì vòng gom không tự dừng, và nếu nó vừa quay
@@ -8,7 +8,7 @@ use crate::sync::{AtomicBool, Ordering as SyncOrdering};
 const DEADLINE: Duration = Duration::from_secs(30);
 
 #[test]
-fn mot_nguoi_ghi_mot_nguoi_doc_khong_mat_khong_dao_thu_tu()
+fn t0_mot_nguoi_ghi_mot_nguoi_doc_khong_mat_khong_dao_thu_tu()
 {
     #[cfg(not(miri))]
     const TOTAL: u32 = 200_000;
@@ -72,7 +72,7 @@ fn mot_nguoi_ghi_mot_nguoi_doc_khong_mat_khong_dao_thu_tu()
 }
 
 #[test]
-fn callback_audio_vet_tung_dot_ma_khong_bo_lenh_nao()
+fn t1_callback_audio_vet_tung_dot_ma_khong_bo_lenh_nao()
 {
     #[cfg(not(miri))]
     const BURSTS: u32 = 2_000;

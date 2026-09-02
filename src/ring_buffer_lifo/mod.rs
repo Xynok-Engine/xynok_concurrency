@@ -1,123 +1,46 @@
-//! src: <https://www.di.ens.fr/~zappa/readings/ppopp13.pdf>
-//! src: <https://github.com/crossbeam-rs/crossbeam/blob/main/crossbeam-deque/src/deque.rs>
+//! ## Ring vào sau ra trước
+//!
+//! Chỗ chứa việc riêng của một worker, ưu tiên chạy thứ vừa đẻ ra.
+//!
+//! ### Giải quyết chuyện gì
+//!
+//! Một việc vừa được đẻ ra thường là việc mà cache của chính thread này còn nóng nhất: dữ liệu nó
+//! cần vừa được chạm tới xong. Chạy nó ngay là rẻ nhất.
+//!
+//! Đồng thời, những việc cũ nhất trong ring thường là những việc to nhất, vì thuật toán chia đôi
+//! đẻ ra việc theo kiểu to trước nhỏ sau. Đó mới là thứ đáng để người khác sang trộm.
+//!
+//! Nên hai bên lấy từ hai đầu khác nhau, và ai cũng được phần hợp với mình.
+//!
+//! ### Cách hoạt động
+//!
+//! Chủ ring đẩy vào và lấy ra ở cùng một đầu, giống một chồng đĩa. Kẻ trộm bốc từ đầu kia. Hai đầu
+//! nằm trên hai dòng cache riêng, nên đường thường của chủ ring không giẫm lên kẻ trộm.
+//!
+//! Con trỏ đầu ring gói hai số vào chung một ô nhớ 64 bit, để chỗ kẻ trộm đang bốc dở và chỗ thật
+//! sự còn hàng luôn được đọc trong cùng một nhịp.
+//!
+//! ### Chỗ khó nhất: giành việc cuối cùng
+//!
+//! Khi ring chỉ còn đúng một việc, chủ và kẻ trộm có thể cùng nhắm vào nó. Cả hai phải cùng đi qua
+//! một lần giành nguyên tử trên con trỏ đầu ring, nên đúng một bên thắng và bên kia ra về tay
+//! không. Đó là chỗ duy nhất trên đường thường mà chủ ring phải trả giá cho việc đồng bộ.
+//!
+//! > [!IMPORTANT]
+//! > Chỉ đúng một thread được làm chủ ring. Đường đẩy việc vào không chống tranh chấp giữa nhiều
+//! > người ghi, vì bỏ được phần đó chính là chỗ tiết kiệm lớn nhất.
 
-use crate::sync::{AtomicU32, AtomicU64, Ordering};
-use crate::utils::cache_padded::CachePadded;
-use crate::utils::slots::Slots;
-use crate::utils::{pack, unpack};
-
+pub mod consts;
 pub mod owner;
+pub mod ring_buffer_lifo;
 pub mod thief;
 
-pub use crate::utils::steal::Steal;
+pub use consts::MAX_SLOTS;
 pub use owner::Producer;
+pub use ring_buffer_lifo::RingBufferLifo;
 pub use thief::Consumer;
 
-pub const MAX_SLOTS: u32 = 1 << 30;
-
-pub struct RingBufferLifo<T>
-{
-    top:    CachePadded<AtomicU64>,
-    bottom: CachePadded<AtomicU32>,
-    slots:  Slots<T>,
-}
-
-unsafe impl<T: Send> Send for RingBufferLifo<T> {}
-unsafe impl<T: Send> Sync for RingBufferLifo<T> {}
-
-impl<T> RingBufferLifo<T>
-{
-    #[track_caller]
-    pub fn new(total_slots: u32) -> Self
-    {
-        assert!(
-            total_slots <= MAX_SLOTS,
-            "total_slots {total_slots} exceeds the 2^30 limit for signed u32 index math"
-        );
-
-        Self {
-            top:    CachePadded::new(AtomicU64::new(pack(0, 0))),
-            bottom: CachePadded::new(AtomicU32::new(0)),
-            slots:  Slots::new(total_slots),
-        }
-    }
-
-    #[inline]
-    pub fn capacity(&self) -> usize
-    {
-        self.slots.capacity()
-    }
-
-    #[inline]
-    pub fn split(&mut self) -> (Producer<'_, T>, Consumer<'_, T>)
-    {
-        let this = &*self;
-        (Producer::new(this), Consumer::new(this))
-    }
-
-    #[inline]
-    pub fn consumer(&self) -> Consumer<'_, T>
-    {
-        Consumer::new(self)
-    }
-
-    #[inline]
-    pub unsafe fn producer(&self) -> Producer<'_, T>
-    {
-        Producer::new(self)
-    }
-
-    #[inline]
-    pub fn occupied(&self) -> usize
-    {
-        let (free, _) = unpack(self.top.load(Ordering::Acquire));
-        let bottom = self.bottom.load(Ordering::Acquire);
-        (bottom.wrapping_sub(free) as i32).clamp(0, self.capacity() as i32) as usize
-    }
-
-    #[inline]
-    pub fn available(&self) -> usize
-    {
-        let (_, claim) = unpack(self.top.load(Ordering::Acquire));
-        let bottom = self.bottom.load(Ordering::Acquire);
-        (bottom.wrapping_sub(claim) as i32).max(0) as usize
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool
-    {
-        self.available() == 0
-    }
-}
-
-impl<T> Drop for RingBufferLifo<T>
-{
-    fn drop(&mut self)
-    {
-        let (_, claim) = unpack(self.top.load(Ordering::Relaxed));
-        let bottom = self.bottom.load(Ordering::Relaxed);
-        let live = (bottom.wrapping_sub(claim) as i32).max(0) as u32;
-
-        for offset in 0..live
-        {
-            unsafe { self.slots.drop_at(claim.wrapping_add(offset)) };
-        }
-    }
-}
-
-impl<T> std::fmt::Debug for RingBufferLifo<T>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
-    {
-        let (free, claim) = unpack(self.top.load(Ordering::Relaxed));
-        f.debug_struct("RingBufferLifo")
-            .field("capacity", &self.capacity())
-            .field("free", &free)
-            .field("claim", &claim)
-            .field("bottom", &self.bottom.load(Ordering::Relaxed))
-            .finish()
-    }
-}
+pub use crate::utils::steal::Steal;
 
 #[cfg(all(test, not(loom)))]
 #[path = "tests/unit.rs"]

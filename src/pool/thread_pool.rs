@@ -5,6 +5,9 @@ use crate::custom_type::Job;
 use crate::lane_queue::LaneQueue;
 use crate::per_worker::PerWorker;
 use crate::ring_buffer_fifo::RingBufferFifo;
+use crate::scope::Scope;
+use crate::scope::params::ParamsParReduce;
+use crate::scope::scope_in::scope_in;
 use crate::sync::cell::UnsafeCell;
 use crate::sync::{Arc, AtomicBool, Mutex, thread};
 use crate::utils::cache_padded::CachePadded;
@@ -178,7 +181,7 @@ impl ThreadPool
             self.shared.scratch.for_each_unchecked(|arena| arena.reset());
         }
 
-        if let Some(sink) = crate::profile::sink()
+        if let Some(sink) = crate::profile::current_sink()
         {
             sink.frame_end();
         }
@@ -300,6 +303,94 @@ impl ThreadPool
     pub fn shutdown(&self)
     {
         self._owner.stop();
+    }
+
+    /// Mở một scope, chạy `f`, rồi chờ mọi thứ `f` spawn ra.
+    ///
+    /// Chờ cả khi `f` panic: bỏ mặc job chạy tiếp trong lúc khung stack chúng đang mượn bị tháo dỡ
+    /// thì đó đúng là cái use-after-free mà scope sinh ra để chặn.
+    ///
+    /// ```
+    /// use xynok_concurrency::pool::{Config, ThreadPool};
+    ///
+    /// let pool = ThreadPool::new(Config {
+    ///     threads: 3,
+    ///     ..Default::default()
+    /// });
+    /// let mut totals = [0usize; 4];
+    ///
+    /// pool.scope(|s| {
+    ///     for (i, slot) in totals.iter_mut().enumerate()
+    ///     {
+    ///         s.spawn(move || *slot = i * i);
+    ///     }
+    /// });
+    ///
+    /// assert_eq!(totals, [0, 1, 4, 9]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Nếu `f` panic, hoặc bất cứ job nào bên trong nó panic. Panic của job được bắt ngay tại chỗ,
+    /// giữ lại, và ném lại ở đây sau khi mọi job khác đã xong: một panic thoát thẳng ra khỏi worker
+    /// sẽ làm bộ đếm job thiếu một, và điểm chờ này treo mãi mãi. Nhiều job cùng panic thì cái được
+    /// ghi nhận đầu tiên thắng, phần còn lại bị thả.
+    pub fn scope<'scope, R>(&self, f: impl FnOnce(&Scope<'scope>) -> R) -> R
+    {
+        scope_in(self.shared(), f)
+    }
+
+    /// Chạy hai việc song song và trả về cả hai kết quả.
+    ///
+    /// `b` chạy ngay trên thread gọi, `a` được giao cho pool. Nếu không ai bốc `a` thì chính thread
+    /// này sẽ chạy nó trong lúc chờ, nên `join` không bao giờ tệ hơn chạy tuần tự quá một chút chi
+    /// phí ghi sổ.
+    ///
+    /// ```
+    /// use xynok_concurrency::pool::{Config, ThreadPool};
+    ///
+    /// let pool = ThreadPool::new(Config {
+    ///     threads: 2,
+    ///     ..Default::default()
+    /// });
+    /// let (left, right) = pool.join(|| (1..=50u64).sum::<u64>(), || (51..=100u64).sum::<u64>());
+    /// assert_eq!(left + right, 5050);
+    /// ```
+    pub fn join<A, B, RA, RB>(&self, a: A, b: B) -> (RA, RB)
+    where
+        A: FnOnce() -> RA + Send,
+        B: FnOnce() -> RB,
+        RA: Send,
+    {
+        let mut left = None;
+
+        let right = self.scope(|s| {
+            let slot = &mut left;
+            s.spawn(move || *slot = Some(a()));
+            b()
+        });
+
+        // Scope đã trả về, nên job của `a` chắc chắn đã chạy xong và đã ghi vào ô.
+        (left.expect("job của `a` xong mà không để lại kết quả"), right)
+    }
+
+    /// Chia `0..n` thành từng lô rồi chạy `f` trên mọi chỉ số. Xem [`Scope::parallel_for`].
+    pub fn parallel_for<F>(&self, n: usize, batch: usize, f: F)
+    where F: Fn(usize) + Sync
+    {
+        self.scope(|s| s.parallel_for(n, batch, f));
+    }
+
+    /// Gộp `0..n` thành một giá trị, song song, kết quả không phụ thuộc lúc nào thread nào xong.
+    /// Xem [`Scope::par_reduce`].
+    pub fn par_reduce<T, I, F, J>(&self, params: ParamsParReduce<I, F, J>) -> T
+    where
+        T: Send,
+        I: Fn() -> T + Sync,
+        F: Fn(T, usize) -> T + Sync,
+        J: Fn(T, T) -> T,
+    {
+        self.scope(|s| s.par_reduce(params))
     }
 }
 

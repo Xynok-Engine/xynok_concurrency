@@ -1,5 +1,6 @@
-use super::*;
-use crate::sync::{Arc, AtomicUsize};
+use crate::ring_buffer_fifo::{Consumer, MAX_SLOTS, Producer, RingBufferFifo, Steal};
+use crate::sync::{Arc, AtomicUsize, Ordering};
+use crate::utils::bits::{pack, unpack};
 
 fn drain(ring: &RingBufferFifo<u32>, start: u32, n: u32) -> Vec<u32>
 {
@@ -9,7 +10,7 @@ fn drain(ring: &RingBufferFifo<u32>, start: u32, n: u32) -> Vec<u32>
 }
 
 #[test]
-fn test_wrapping_sub()
+fn t0_test_wrapping_sub()
 {
     let a: u32 = 0;
     let b: u32 = u32::MAX;
@@ -17,7 +18,7 @@ fn test_wrapping_sub()
 }
 
 #[test]
-fn test_mask()
+fn t1_test_mask()
 {
     let capacity: u32 = 8;
     assert!(capacity.is_power_of_two());
@@ -29,7 +30,7 @@ fn test_mask()
 }
 
 #[test]
-fn suc_chua_lam_tron_len_luy_thua_hai()
+fn t2_suc_chua_lam_tron_len_luy_thua_hai()
 {
     assert_eq!(RingBufferFifo::<u8>::new(0).capacity(), 2);
     assert_eq!(RingBufferFifo::<u8>::new(1).capacity(), 2);
@@ -41,13 +42,13 @@ fn suc_chua_lam_tron_len_luy_thua_hai()
 
 #[test]
 #[should_panic(expected = "2^31")]
-fn suc_chua_vuot_tran_thi_panic()
+fn t3_suc_chua_vuot_tran_thi_panic()
 {
     let _ = RingBufferFifo::<u8>::new(MAX_SLOTS + 1);
 }
 
 #[test]
-fn ring_buffer_rong_thi_moi_con_so_deu_bang_khong()
+fn t4_ring_buffer_rong_thi_moi_con_so_deu_bang_khong()
 {
     let ring = RingBufferFifo::<u8>::new(8);
     assert_eq!(ring.occupied(), 0);
@@ -56,7 +57,7 @@ fn ring_buffer_rong_thi_moi_con_so_deu_bang_khong()
 }
 
 #[test]
-fn occupied_la_hieu_hai_dau_ke_ca_khi_tran_so()
+fn t5_occupied_la_hieu_hai_dau_ke_ca_khi_tran_so()
 {
     let ring = RingBufferFifo::<u8>::new(8);
 
@@ -71,7 +72,7 @@ fn occupied_la_hieu_hai_dau_ke_ca_khi_tran_so()
 }
 
 #[test]
-fn occupied_va_is_empty_duoc_phep_lech_nhau()
+fn t6_occupied_va_is_empty_duoc_phep_lech_nhau()
 {
     let ring = RingBufferFifo::<u32>::new(4);
     let mut tx = unsafe { ring.producer() };
@@ -93,7 +94,7 @@ fn occupied_va_is_empty_duoc_phep_lech_nhau()
 }
 
 #[test]
-fn drop_tha_moi_job_chua_lay()
+fn t7_drop_tha_moi_job_chua_lay()
 {
     let alive = Arc::new(AtomicUsize::new(0));
     {
@@ -109,7 +110,7 @@ fn drop_tha_moi_job_chua_lay()
 }
 
 #[test]
-fn drop_di_dung_vong_khi_chi_so_quan_qua_cuoi_mang()
+fn t8_drop_di_dung_vong_khi_chi_so_quan_qua_cuoi_mang()
 {
     let alive = Arc::new(AtomicUsize::new(0));
     {
@@ -131,7 +132,7 @@ fn drop_di_dung_vong_khi_chi_so_quan_qua_cuoi_mang()
 }
 
 #[test]
-fn drop_khong_dung_toi_vung_da_co_chu()
+fn t9_drop_khong_dung_toi_vung_da_co_chu()
 {
     let alive = Arc::new(AtomicUsize::new(0));
     {
@@ -154,7 +155,7 @@ fn drop_khong_dung_toi_vung_da_co_chu()
 }
 
 #[test]
-fn hai_quyen_co_dung_bo_trait_can_thiet()
+fn t10_hai_quyen_co_dung_bo_trait_can_thiet()
 {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
@@ -167,7 +168,7 @@ fn hai_quyen_co_dung_bo_trait_can_thiet()
 }
 
 #[test]
-fn push_va_pop_giu_dung_thu_tu_fifo()
+fn t11_push_va_pop_giu_dung_thu_tu_fifo()
 {
     let mut ring = RingBufferFifo::new(4);
     let (mut tx, _) = ring.split();
@@ -187,7 +188,7 @@ fn push_va_pop_giu_dung_thu_tu_fifo()
 }
 
 #[test]
-fn day_thi_tra_lai_job_chu_khong_nuot()
+fn t12_day_thi_tra_lai_job_chu_khong_nuot()
 {
     let mut ring = RingBufferFifo::new(2);
     let (mut tx, _) = ring.split();
@@ -201,7 +202,7 @@ fn day_thi_tra_lai_job_chu_khong_nuot()
 }
 
 #[test]
-fn chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
+fn t13_chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
 {
     let mut ring = RingBufferFifo::new(4);
     let (mut tx, _) = ring.split();
@@ -220,7 +221,7 @@ fn chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
 }
 
 #[test]
-fn push_batch_nhan_phan_vua_va_giu_nguyen_phan_thua()
+fn t14_push_batch_nhan_phan_vua_va_giu_nguyen_phan_thua()
 {
     let mut ring = RingBufferFifo::new(4);
     let (mut tx, _) = ring.split();
@@ -240,7 +241,7 @@ fn push_batch_nhan_phan_vua_va_giu_nguyen_phan_thua()
 }
 
 #[test]
-fn push_iter_khong_can_vec_trung_gian()
+fn t15_push_iter_khong_can_vec_trung_gian()
 {
     let mut ring = RingBufferFifo::new(4);
     let (mut tx, _) = ring.split();
@@ -255,7 +256,7 @@ fn push_iter_khong_can_vec_trung_gian()
 }
 
 #[test]
-fn pop_batch_bi_chan_boi_so_job_dang_co()
+fn t16_pop_batch_bi_chan_boi_so_job_dang_co()
 {
     let mut ring = RingBufferFifo::new(8);
     let (mut tx, _) = ring.split();
@@ -271,7 +272,7 @@ fn pop_batch_bi_chan_boi_so_job_dang_co()
 }
 
 #[test]
-fn spill_half_nha_nua_hang_doi_ra_ngoai()
+fn t17_spill_half_nha_nua_hang_doi_ra_ngoai()
 {
     let mut ring = RingBufferFifo::new(8);
     let (mut tx, _) = ring.split();
@@ -285,7 +286,7 @@ fn spill_half_nha_nua_hang_doi_ra_ngoai()
 }
 
 #[test]
-fn ke_trom_boc_tu_dau_cu_nhat()
+fn t18_ke_trom_boc_tu_dau_cu_nhat()
 {
     let mut ring = RingBufferFifo::new(8);
     let (mut tx, rx) = ring.split();
@@ -303,7 +304,7 @@ fn ke_trom_boc_tu_dau_cu_nhat()
 }
 
 #[test]
-fn steal_half_lay_nua_lam_tron_len()
+fn t19_steal_half_lay_nua_lam_tron_len()
 {
     let mut ring = RingBufferFifo::new(8);
     let (mut tx, rx) = ring.split();
@@ -326,7 +327,7 @@ fn steal_half_lay_nua_lam_tron_len()
 }
 
 #[test]
-fn rong_va_ban_la_hai_ket_qua_khac_nhau()
+fn t20_rong_va_ban_la_hai_ket_qua_khac_nhau()
 {
     let ring = RingBufferFifo::<u32>::new(8);
     let mut tx = unsafe { ring.producer() };
@@ -347,7 +348,7 @@ fn rong_va_ban_la_hai_ket_qua_khac_nhau()
 }
 
 #[test]
-fn steal_into_chuyen_thang_sang_ring_khac_khong_cap_phat()
+fn t21_steal_into_chuyen_thang_sang_ring_khac_khong_cap_phat()
 {
     let mut victim = RingBufferFifo::new(8);
     let mut thief = RingBufferFifo::new(8);
@@ -368,7 +369,7 @@ fn steal_into_chuyen_thang_sang_ring_khac_khong_cap_phat()
 }
 
 #[test]
-fn steal_into_khong_vuot_qua_cho_trong_cua_dich()
+fn t22_steal_into_khong_vuot_qua_cho_trong_cua_dich()
 {
     let mut victim = RingBufferFifo::new(16);
     let mut thief = RingBufferFifo::new(2);
@@ -387,7 +388,7 @@ fn steal_into_khong_vuot_qua_cho_trong_cua_dich()
 }
 
 #[test]
-fn ke_trom_thu_hai_bo_di_khi_da_co_nguoi_dang_be()
+fn t23_ke_trom_thu_hai_bo_di_khi_da_co_nguoi_dang_be()
 {
     let ring = RingBufferFifo::new(8);
     let mut tx = unsafe { ring.producer() };
@@ -410,7 +411,7 @@ fn ke_trom_thu_hai_bo_di_khi_da_co_nguoi_dang_be()
 }
 
 #[test]
-fn pop_khong_keo_steal_qua_vung_dang_bi_be()
+fn t24_pop_khong_keo_steal_qua_vung_dang_bi_be()
 {
     let ring = RingBufferFifo::new(8);
     let mut tx = unsafe { ring.producer() };
@@ -428,7 +429,7 @@ fn pop_khong_keo_steal_qua_vung_dang_bi_be()
 }
 
 #[test]
-fn cache_steal_cua_chu_khong_bao_gio_bao_thua_cho_trong()
+fn t25_cache_steal_cua_chu_khong_bao_gio_bao_thua_cho_trong()
 {
     let ring = RingBufferFifo::<u32>::new(4);
     let mut tx = unsafe { ring.producer() };
@@ -453,7 +454,7 @@ fn cache_steal_cua_chu_khong_bao_gio_bao_thua_cho_trong()
 }
 
 #[test]
-fn push_theo_lo_khong_bi_cache_cu_cat_ngan()
+fn t26_push_theo_lo_khong_bi_cache_cu_cat_ngan()
 {
     let mut ring = RingBufferFifo::new(4);
     let (mut tx, rx) = ring.split();

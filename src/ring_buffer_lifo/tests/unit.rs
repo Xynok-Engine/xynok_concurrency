@@ -1,8 +1,9 @@
-use super::*;
-use crate::sync::{Arc, AtomicUsize};
+use crate::ring_buffer_lifo::{Consumer, MAX_SLOTS, Producer, RingBufferLifo, Steal};
+use crate::sync::{Arc, AtomicUsize, Ordering};
+use crate::utils::bits::{pack, unpack};
 
 #[test]
-fn suc_chua_lam_tron_len_luy_thua_hai()
+fn t0_suc_chua_lam_tron_len_luy_thua_hai()
 {
     assert_eq!(RingBufferLifo::<u8>::new(0).capacity(), 2);
     assert_eq!(RingBufferLifo::<u8>::new(3).capacity(), 4);
@@ -12,13 +13,13 @@ fn suc_chua_lam_tron_len_luy_thua_hai()
 
 #[test]
 #[should_panic(expected = "2^30")]
-fn suc_chua_vuot_tran_thi_panic()
+fn t1_suc_chua_vuot_tran_thi_panic()
 {
     let _ = RingBufferLifo::<u8>::new(MAX_SLOTS + 1);
 }
 
 #[test]
-fn ring_buffer_rong_thi_moi_con_so_deu_bang_khong()
+fn t2_ring_buffer_rong_thi_moi_con_so_deu_bang_khong()
 {
     let ring = RingBufferLifo::<u8>::new(8);
     assert_eq!(ring.occupied(), 0);
@@ -27,7 +28,7 @@ fn ring_buffer_rong_thi_moi_con_so_deu_bang_khong()
 }
 
 #[test]
-fn hai_quyen_co_dung_bo_trait_can_thiet()
+fn t3_hai_quyen_co_dung_bo_trait_can_thiet()
 {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
@@ -40,7 +41,7 @@ fn hai_quyen_co_dung_bo_trait_can_thiet()
 }
 
 #[test]
-fn chu_lay_job_moi_nhat_truoc()
+fn t4_chu_lay_job_moi_nhat_truoc()
 {
     let mut ring = RingBufferLifo::new(8);
     let (mut tx, _) = ring.split();
@@ -60,7 +61,7 @@ fn chu_lay_job_moi_nhat_truoc()
 }
 
 #[test]
-fn ke_trom_lay_job_cu_nhat_truoc()
+fn t5_ke_trom_lay_job_cu_nhat_truoc()
 {
     let mut ring = RingBufferLifo::new(8);
     let (mut tx, rx) = ring.split();
@@ -76,7 +77,7 @@ fn ke_trom_lay_job_cu_nhat_truoc()
 }
 
 #[test]
-fn day_thi_tra_lai_job_chu_khong_nuot()
+fn t6_day_thi_tra_lai_job_chu_khong_nuot()
 {
     let mut ring = RingBufferLifo::new(2);
     let (mut tx, _) = ring.split();
@@ -93,7 +94,7 @@ fn day_thi_tra_lai_job_chu_khong_nuot()
 }
 
 #[test]
-fn chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
+fn t7_chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
 {
     let mut ring = RingBufferLifo::new(4);
     let (mut tx, rx) = ring.split();
@@ -110,7 +111,7 @@ fn chi_so_quan_qua_cuoi_mang_van_dung_thu_tu()
 }
 
 #[test]
-fn pop_batch_tra_ve_theo_thu_tu_nguoc()
+fn t8_pop_batch_tra_ve_theo_thu_tu_nguoc()
 {
     let mut ring = RingBufferLifo::new(8);
     let (mut tx, _) = ring.split();
@@ -128,7 +129,7 @@ fn pop_batch_tra_ve_theo_thu_tu_nguoc()
 }
 
 #[test]
-fn push_batch_nhan_phan_vua_va_giu_nguyen_phan_thua()
+fn t9_push_batch_nhan_phan_vua_va_giu_nguyen_phan_thua()
 {
     let mut ring = RingBufferLifo::new(4);
     let (mut tx, _) = ring.split();
@@ -145,7 +146,7 @@ fn push_batch_nhan_phan_vua_va_giu_nguyen_phan_thua()
 }
 
 #[test]
-fn rong_va_ban_la_hai_ket_qua_khac_nhau()
+fn t10_rong_va_ban_la_hai_ket_qua_khac_nhau()
 {
     let ring = RingBufferLifo::<u32>::new(8);
     let mut tx = unsafe { ring.producer() };
@@ -165,7 +166,7 @@ fn rong_va_ban_la_hai_ket_qua_khac_nhau()
 }
 
 #[test]
-fn chu_van_lay_duoc_khi_ke_trom_dang_be()
+fn t11_chu_van_lay_duoc_khi_ke_trom_dang_be()
 {
     let ring = RingBufferLifo::<u32>::new(8);
     let mut tx = unsafe { ring.producer() };
@@ -183,7 +184,7 @@ fn chu_van_lay_duoc_khi_ke_trom_dang_be()
 }
 
 #[test]
-fn chu_gianh_duoc_job_cuoi_cung_thi_giu_nguyen_vung_dang_be()
+fn t12_chu_gianh_duoc_job_cuoi_cung_thi_giu_nguyen_vung_dang_be()
 {
     let ring = RingBufferLifo::<u32>::new(8);
     let mut tx = unsafe { ring.producer() };
@@ -202,7 +203,7 @@ fn chu_gianh_duoc_job_cuoi_cung_thi_giu_nguyen_vung_dang_be()
 }
 
 #[test]
-fn steal_into_chuyen_thang_sang_ring_khac()
+fn t13_steal_into_chuyen_thang_sang_ring_khac()
 {
     let mut victim = RingBufferLifo::new(8);
     let mut thief = RingBufferLifo::new(8);
@@ -225,7 +226,7 @@ fn steal_into_chuyen_thang_sang_ring_khac()
 }
 
 #[test]
-fn steal_into_bao_ban_khi_dich_da_day()
+fn t14_steal_into_bao_ban_khi_dich_da_day()
 {
     let mut victim = RingBufferLifo::new(8);
     let mut thief = RingBufferLifo::new(2);
@@ -240,7 +241,7 @@ fn steal_into_bao_ban_khi_dich_da_day()
 }
 
 #[test]
-fn drop_tha_moi_job_chua_lay()
+fn t15_drop_tha_moi_job_chua_lay()
 {
     let alive = Arc::new(AtomicUsize::new(0));
     {
@@ -256,7 +257,7 @@ fn drop_tha_moi_job_chua_lay()
 }
 
 #[test]
-fn drop_di_dung_vong_khi_chi_so_quan_qua_cuoi_mang()
+fn t16_drop_di_dung_vong_khi_chi_so_quan_qua_cuoi_mang()
 {
     let alive = Arc::new(AtomicUsize::new(0));
     {
@@ -278,7 +279,7 @@ fn drop_di_dung_vong_khi_chi_so_quan_qua_cuoi_mang()
 }
 
 #[test]
-fn drop_khong_dung_toi_vung_da_co_chu()
+fn t17_drop_khong_dung_toi_vung_da_co_chu()
 {
     let alive = Arc::new(AtomicUsize::new(0));
     {
@@ -300,7 +301,7 @@ fn drop_khong_dung_toi_vung_da_co_chu()
 }
 
 #[test]
-fn push_theo_lo_khong_bi_cache_cu_cat_ngan()
+fn t18_push_theo_lo_khong_bi_cache_cu_cat_ngan()
 {
     let mut ring = RingBufferLifo::new(4);
     let (mut tx, rx) = ring.split();
@@ -318,7 +319,7 @@ fn push_theo_lo_khong_bi_cache_cu_cat_ngan()
 }
 
 #[test]
-fn spill_half_nha_nua_cu_va_giu_nua_moi()
+fn t19_spill_half_nha_nua_cu_va_giu_nua_moi()
 {
     let mut ring = RingBufferLifo::new(8);
     let (mut tx, _) = ring.split();
@@ -338,7 +339,7 @@ fn spill_half_nha_nua_cu_va_giu_nua_moi()
 }
 
 #[test]
-fn spill_half_chua_lai_job_cuoi_cung_cho_chu()
+fn t20_spill_half_chua_lai_job_cuoi_cung_cho_chu()
 {
     let mut ring = RingBufferLifo::new(8);
     let (mut tx, _) = ring.split();
@@ -356,7 +357,7 @@ fn spill_half_chua_lai_job_cuoi_cung_cho_chu()
 }
 
 #[test]
-fn spill_half_nhuong_duong_khi_ke_trom_dang_be()
+fn t21_spill_half_nhuong_duong_khi_ke_trom_dang_be()
 {
     let mut ring = RingBufferLifo::new(8);
     let (mut tx, rx) = ring.split();
@@ -375,7 +376,7 @@ fn spill_half_nhuong_duong_khi_ke_trom_dang_be()
 }
 
 #[test]
-fn spill_half_roi_push_tiep_thi_ring_khong_con_day()
+fn t22_spill_half_roi_push_tiep_thi_ring_khong_con_day()
 {
     let mut ring = RingBufferLifo::new(4);
     let (mut tx, _) = ring.split();
@@ -397,7 +398,7 @@ fn spill_half_roi_push_tiep_thi_ring_khong_con_day()
 }
 
 #[test]
-fn spill_half_quan_qua_cuoi_mang_van_dung_thu_tu()
+fn t23_spill_half_quan_qua_cuoi_mang_van_dung_thu_tu()
 {
     let mut ring = RingBufferLifo::new(4);
     let (mut tx, _) = ring.split();

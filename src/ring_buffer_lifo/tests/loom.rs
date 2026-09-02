@@ -1,7 +1,7 @@
-use super::*;
+use crate::ring_buffer_lifo::{RingBufferLifo, Steal};
 
 #[test]
-fn chu_va_trom_cung_gianh_job_cuoi_khong_ai_lay_trung()
+fn t0_chu_va_trom_cung_gianh_job_cuoi_khong_ai_lay_trung()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
@@ -21,7 +21,7 @@ fn chu_va_trom_cung_gianh_job_cuoi_khong_ai_lay_trung()
 }
 
 #[test]
-fn chu_va_trom_tren_hai_job()
+fn t1_chu_va_trom_tren_hai_job()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
@@ -46,7 +46,7 @@ fn chu_va_trom_tren_hai_job()
 }
 
 #[test]
-fn trom_thay_bottom_moi_thi_thay_ca_job()
+fn t2_trom_thay_bottom_moi_thi_thay_ca_job()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
@@ -66,7 +66,7 @@ fn trom_thay_bottom_moi_thi_thay_ca_job()
 }
 
 #[test]
-fn chu_khong_ghi_de_len_o_ke_trom_dang_be()
+fn t3_chu_khong_ghi_de_len_o_ke_trom_dang_be()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
@@ -107,7 +107,7 @@ fn chu_khong_ghi_de_len_o_ke_trom_dang_be()
 }
 
 #[test]
-fn chu_day_them_trong_luc_trom_dang_be()
+fn t4_chu_day_them_trong_luc_trom_dang_be()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));
@@ -142,7 +142,7 @@ fn chu_day_them_trong_luc_trom_dang_be()
 }
 
 #[test]
-fn chu_day_theo_lo_trong_luc_trom_dang_be()
+fn t5_chu_day_theo_lo_trong_luc_trom_dang_be()
 {
     loom::model(|| {
         let ring = loom::sync::Arc::new(RingBufferLifo::<u32>::new(2));

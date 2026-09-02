@@ -2,7 +2,7 @@
 
 use crate::sync::thread::JoinHandle;
 use crate::sync::{Arc, Mutex, Ordering};
-use crate::utils::ignore_poison;
+use crate::utils::poison::ignore_poison;
 
 use super::shared::Shared;
 

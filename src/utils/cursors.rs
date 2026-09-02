@@ -32,23 +32,43 @@ impl CursorData
         self.tail.wrapping_sub(self.blocked) as usize
     }
 }
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod test
 {
-    fn fn_available_slots(capacity: u32, tail: u32, stolen: u32, result: u32)
+    use super::*;
+
+    fn cursor(capacity: u32, tail: u32, stolen: u32, blocked: u32) -> CursorData
     {
-        let available = capacity.wrapping_sub(tail).wrapping_add(stolen);
-        //let available = available & (capacity - 1);
-        assert!(available == result, "{} != {}", available, result);
+        CursorData {
+            stolen:   stolen,
+            blocked:  blocked,
+            tail:     tail,
+            capacity: capacity,
+            mask:     capacity - 1,
+        }
     }
 
     #[test]
-    fn test_available_slots()
+    fn t0_dem_dung_so_o_con_trong()
     {
-        fn_available_slots(8, 6, 1, 3);
-        fn_available_slots(8, 6, 5, 7);
-        fn_available_slots(8, 8, 8, 8);
-        fn_available_slots(8, 12, 12, 8);
-        fn_available_slots(8, 12, 5, 1);
+        assert_eq!(cursor(8, 6, 1, 0).empty_slots(), 3);
+        assert_eq!(cursor(8, 6, 5, 0).empty_slots(), 7);
+        assert_eq!(cursor(8, 8, 8, 0).empty_slots(), 8);
+    }
+
+    #[test]
+    fn t1_o_con_trong_van_dung_khi_con_tro_da_quan_vong()
+    {
+        assert_eq!(cursor(8, 12, 12, 0).empty_slots(), 8);
+        assert_eq!(cursor(8, 12, 5, 0).empty_slots(), 1);
+    }
+
+    #[test]
+    fn t2_dem_dung_so_o_da_co_hang()
+    {
+        assert_eq!(cursor(8, 6, 0, 2).filled_slots(), 4);
+        assert_eq!(cursor(8, 6, 0, 6).filled_slots(), 0);
+        // Tail quấn qua 0 mà blocked chưa quấn: hiệu vẫn phải ra đúng.
+        assert_eq!(cursor(8, 1, 0, u32::MAX).filled_slots(), 2);
     }
 }

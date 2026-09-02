@@ -1,8 +1,16 @@
-use crate::utils::ignore_poison;
+use crate::utils::poison::ignore_poison;
 use std::fmt;
 use std::sync::{Condvar, Mutex, MutexGuard, TryLockError, WaitTimeoutResult};
 use std::time::Duration;
 
+/// Một cái khoá đi kèm sẵn chỗ để chờ và để gọi dậy.
+///
+/// Của std thì khoá và chuông là hai thứ rời nhau, nên mỗi lần dùng lại phải tự ghép đúng cặp, mà
+/// ghép nhầm thì lỗi chỉ hiện ra lúc chạy. Gộp lại một chỗ thì không còn cách nào ghép sai.
+///
+/// Khoá nhiễm độc vì có thread panic lúc đang giữ cũng được bỏ qua: mọi chỗ dùng ở đây đều tự giữ
+/// dữ liệu hợp lệ trước khi nhả, nên một cú panic của thread khác không có lý do gì làm hỏng phần
+/// còn lại.
 pub struct MutexCondition<T>
 {
     val:    Mutex<T>,

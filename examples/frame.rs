@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use xynok_concurrency::lanes::Lanes;
 use xynok_concurrency::ring_buffer_spsc::RingBufferSpsc;
+use xynok_concurrency::scope::ParamsParReduce;
 
 /// Lệnh mà lane compute gửi cho thread audio.
 #[derive(Debug, Clone, Copy)]
@@ -84,9 +85,13 @@ fn main()
         }
 
         // 2. Một phép gộp song song, kết quả không đổi giữa các lần chạy vì thứ tự nối là cố định.
-        let total = lanes
-            .compute()
-            .par_reduce(ENTITIES, BATCH, || 0.0f64, |acc, i| acc + positions[i] as f64, |a, b| a + b);
+        let total = lanes.compute().par_reduce(ParamsParReduce {
+            n:        ENTITIES,
+            batch:    BATCH,
+            identity: || 0.0f64,
+            fold:     |acc, i| acc + positions[i] as f64,
+            join:     |a, b| a + b,
+        });
 
         // 3. Gửi lệnh cho audio. Ring đầy thì bỏ lệnh, chứ không đứng chờ thread audio.
         let _ = audio_tx.push(AudioCommand::Play(frame as u32));

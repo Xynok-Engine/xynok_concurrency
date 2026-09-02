@@ -1,11 +1,13 @@
 [package]
 name = "xynok_concurrency"
-version = "0.1.63"
+version = "0.1.64"
 edition = "2024"
 
 
 [lints.clippy]
 redundant_field_names = "allow"
+# Quy ước "một struct một file" đặt `Foo` vào `foo/foo.rs`, nên trùng tên module là cố ý.
+module_inception = "allow"
 missing_safety_doc = "allow"
 too_many_arguments = "allow"
 

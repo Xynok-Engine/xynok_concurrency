@@ -1,9 +1,9 @@
-use super::*;
-use crate::sync::AtomicBool;
+use crate::ring_buffer_fifo::RingBufferFifo;
+use crate::sync::{AtomicBool, Ordering};
 use crate::utils::backoff::Backoff;
 
 #[test]
-fn mot_nguoi_ghi_ba_ke_trom_khong_mat_khong_nhan_doi()
+fn t0_mot_nguoi_ghi_ba_ke_trom_khong_mat_khong_nhan_doi()
 {
     #[cfg(not(miri))]
     const TOTAL: u32 = 20_000;
