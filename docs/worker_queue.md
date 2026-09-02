@@ -1,7 +1,7 @@
 ---
 title: Worker Queue
 excerpt: The mechanics behind worker queue.
-cover img: "../images/work_stealing.png"
+cover img: "../images/worker_queue.png"
 tags:
   - concurrency
   - data_structure

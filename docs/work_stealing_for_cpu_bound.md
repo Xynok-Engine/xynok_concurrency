@@ -1,7 +1,7 @@
 ---
 title: Work Stealing for CPU-bound Tasks
 excerpt: The mechanics behind work-stealing for CPU-bound task scheduling
-cover img: "../images/worker_queue.png"
+cover img: "../images/work_stealing.png"
 tags:
   - concurrency
   - data_structure
