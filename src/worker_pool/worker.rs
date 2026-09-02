@@ -1,13 +1,13 @@
-use crate::collection::ring_buffer::spmc_fifo::SpmcRingBufferFifo;
+use crate::collection::ring_buffer::spmc_lifo_produce_fifo_consume::SpmcRingBufferLifoProduceFifoConsume;
+use crate::custom_type::Job;
 use crate::sync::thread::{self, JoinHandle};
-use crate::utils::inline_fn::InlineFn;
-use crate::worker_pool::thread_meta::WorkerData;
+use crate::worker_pool::thread_meta::WorkerHandle;
 use xynok_std::unsafe_ptr::HeapPtr;
 
 pub struct Worker
 {
-    pub meta_data: WorkerData,
-    pub tasks:     HeapPtr<SpmcRingBufferFifo<InlineFn>>,
+    pub meta_data: WorkerHandle,
+    pub tasks:     HeapPtr<SpmcRingBufferLifoProduceFifoConsume<Job>>,
 }
 
 impl Worker
@@ -15,9 +15,9 @@ impl Worker
     #[track_caller]
     pub fn new(handle: JoinHandle<()>, task_capacity: usize) -> Self
     {
-        let tasks = HeapPtr::new(SpmcRingBufferFifo::<InlineFn>::new(task_capacity));
+        let tasks = HeapPtr::new(SpmcRingBufferLifoProduceFifoConsume::<Job>::new(task_capacity));
         Self {
-            meta_data: WorkerData::new(handle),
+            meta_data: WorkerHandle::new(handle),
             tasks,
         }
     }

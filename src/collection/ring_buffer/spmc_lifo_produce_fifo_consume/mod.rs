@@ -7,6 +7,7 @@ use crate::utils::cache_padded::CachePadded;
 use crate::utils::cursors::CursorData;
 use crate::utils::fixed_buffer::FixedRingBuffer;
 use crate::utils::packed::Packed;
+use crate::utils::steal::Steal;
 use crate::utils::{pack, unpack};
 
 use consumer::Consumer;
@@ -156,16 +157,35 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
         }
     }
 
+    /// Vét một lô việc từ ring này sang `dst`, giữ nguyên thứ tự FIFO của nguồn.
+    ///
+    /// Trả về [`Steal`] thay vì một con số, vì "lấy được 0" gộp chung hai chuyện rất khác nhau:
+    /// - [`Steal::Empty`]: nguồn đang cạn thật, kẻ trộm nên đi tìm nạn nhân khác.
+    /// - [`Steal::Busy`]: có người chen ngang, hoặc `dst` hết chỗ. Nguồn vẫn còn hàng, quay lại sau
+    ///   là lấy được.
+    /// - [`Steal::Success`]: kèm theo số phần tử đã chuyển, luôn lớn hơn 0.
+    ///
+    /// Cú CAS giành lô chỉ thử đúng một lần. Thua thì nhả ra [`Steal::Busy`] chứ không ngồi xoay
+    /// vòng: người gọi tự quyết là thử lại chỗ này hay bỏ đi nơi khác, vẫn nhanh hơn đứng chờ.
     #[inline]
-    pub(crate) fn consumer_pop_batch_to(&self, max: usize, other: &SpmcRingBufferLifoProduceFifoConsume<T>) -> usize
+    pub(crate) fn try_steal_batch_to(&self, max: usize, dst: &SpmcRingBufferLifoProduceFifoConsume<T>) -> Steal<usize>
     {
-        let other_cusror_data = other.cursor_data();
+        debug_assert!(max > 0, "The steal batch size must be greater than zero.");
+        let dst_cursor_data = dst.cursor_data();
         let mut my_cursor_data = self.cursor_data();
 
-        let take_amount = other_cusror_data.empty_slots().min(max).min(my_cursor_data.filled_slots());
+        // Đích hết chỗ thì đó là chuyện của đích, không phải nguồn cạn. Báo `Busy` để người gọi
+        // biết là dọn bớt deque của mình rồi quay lại, đừng bỏ nạn nhân này đi.
+        let free_slots = dst_cursor_data.empty_slots();
+        if free_slots < 1
+        {
+            return Steal::Busy;
+        }
+
+        let take_amount = free_slots.min(max).min(my_cursor_data.filled_slots());
         if take_amount < 1
         {
-            return 0;
+            return Steal::Empty;
         }
 
         let params = ParamsCasForPopBatch {
@@ -178,8 +198,9 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
 
         let pop_amount = match self.fifo_try_cas_for_pop_batch(params)
         {
-            Some(r) => r,
-            None => return 0,
+            Steal::Success(amount) => amount,
+            Steal::Empty => return Steal::Empty,
+            Steal::Busy => return Steal::Busy,
         };
         let claim_start = my_cursor_data.blocked;
         for offset in 0..pop_amount
@@ -187,54 +208,90 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             let cursor_idx = claim_start.wrapping_add(offset as u32);
             unsafe {
                 let val = self.buffer.take_at(cursor_idx);
-                other.buffer.write(other_cusror_data.tail.wrapping_add(offset as u32), val);
+                dst.buffer.write(dst_cursor_data.tail.wrapping_add(offset as u32), val);
             }
         }
         self.consumer_publish_stolen(claim_start, pop_amount as u32);
-        // `other` là deque của chính thread đang gọi nên không có ai push song song, nhưng vẫn dùng
+        // `dst` là deque của chính thread đang gọi nên không có ai push song song, nhưng vẫn dùng
         // `fetch_add` để khỏi giẫm lên `in_stealing` mà kẻ trộm khác đang nhích.
-        other.anchor.fetch_add((pop_amount as u64) << 32, Release);
-        pop_amount
+        dst.anchor.fetch_add((pop_amount as u64) << 32, Release);
+        Steal::Success(pop_amount)
+    }
+
+    /// Trộm đúng một việc rồi cầm luôn giá trị về, không cần deque đích.
+    ///
+    /// Hợp với lúc worker chỉ muốn một việc để làm ngay. Vẫn là đầu FIFO của nạn nhân, nên chủ và
+    /// kẻ trộm ăn từ hai đầu khác nhau.
+    #[inline]
+    pub(crate) fn try_steal_one(&self) -> Steal<T>
+    {
+        let mut my_cursor_data = self.cursor_data();
+
+        let params = ParamsCasForPopBatch {
+            cursor_data:           &mut my_cursor_data,
+            pop_amount:            1,
+            success_order:         Release,
+            fail_order:            Acquire,
+            fetch_after_cas_order: Relaxed,
+        };
+
+        match self.fifo_try_cas_for_pop_batch(params)
+        {
+            Steal::Success(_) =>
+            {}
+            Steal::Empty => return Steal::Empty,
+            Steal::Busy => return Steal::Busy,
+        }
+
+        let claim_start = my_cursor_data.blocked;
+        let val = unsafe { self.buffer.take_at(claim_start) };
+        self.consumer_publish_stolen(claim_start, 1);
+        Steal::Success(val)
+    }
+
+    /// Bản gọn của [`Self::try_steal_batch_to`] cho chỗ nào chỉ cần biết lấy được bao nhiêu.
+    #[inline]
+    pub(crate) fn consumer_pop_batch_to(&self, max: usize, other: &SpmcRingBufferLifoProduceFifoConsume<T>) -> usize
+    {
+        self.try_steal_batch_to(max, other).success().unwrap_or(0)
     }
 }
 impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
 {
-    /// Giành trước một lô ở đầu `in_stealing`, trả về số lượng giành được.
+    /// Giành trước một lô ở đầu `in_stealing`, thử đúng một lần.
+    ///
+    /// Không có vòng xoay ở đây: CAS thua nghĩa là vừa có người đụng vào `anchor`, ảnh chụp con trỏ
+    /// trong tay đã cũ. Thay vì thử lại với số liệu cũ, trả [`Steal::Busy`] để người gọi chụp lại từ
+    /// đầu hoặc chuyển sang nạn nhân khác.
     ///
     /// Note: Since this is an SPMC implementation, we do not increment the stolen count during the
     /// CAS operation. The caller must handle this after successfully popping the value.
     #[cold]
-    fn fifo_try_cas_for_pop_batch(&self, mut cas_data: ParamsCasForPopBatch) -> Option<usize>
+    fn fifo_try_cas_for_pop_batch(&self, mut cas_data: ParamsCasForPopBatch) -> Steal<usize>
     {
         debug_assert!(cas_data.pop_amount > 0, "pop amount must > 0");
-        loop
+        let filled_slots = cas_data.cursor_data.filled_slots();
+        if filled_slots < 1
         {
-            let filled_slots = cas_data.cursor_data.filled_slots();
-            if filled_slots < 1
-            {
-                return None;
-            }
-            cas_data.pop_amount = cas_data.pop_amount.min(filled_slots);
+            return Steal::Empty;
+        }
+        // `tail` về cùng nhịp với `in_stealing` nên không thể lệch nhau. Đây đúng là chỗ giữ cho
+        // `pop_amount` không bao giờ ôm nhầm ô của chủ.
+        cas_data.pop_amount = cas_data.pop_amount.min(filled_slots);
 
-            let current = pack(cas_data.cursor_data.tail, cas_data.cursor_data.blocked);
-            let next = pack(
-                cas_data.cursor_data.tail,
-                // reserve a slot for the pop operation, creating a barrier for other consumers
-                cas_data.cursor_data.blocked.wrapping_add(cas_data.pop_amount as u32),
-            );
+        let current = pack(cas_data.cursor_data.tail, cas_data.cursor_data.blocked);
+        let next = pack(
+            cas_data.cursor_data.tail,
+            // reserve a slot for the pop operation, creating a barrier for other consumers
+            cas_data.cursor_data.blocked.wrapping_add(cas_data.pop_amount as u32),
+        );
 
-            match self.anchor.compare_exchange_weak(current, next, cas_data.success_order, cas_data.fail_order)
-            {
-                Ok(_) => return Some(cas_data.pop_amount),
-                Err(c) =>
-                {
-                    // `tail` về cùng nhịp với `in_stealing` nên không thể lệch nhau. Đây đúng là
-                    // chỗ giữ cho `pop_amount` ở vòng sau không bao giờ ôm nhầm ô của chủ.
-                    let (tail, in_stealing) = unpack(c);
-                    cas_data.cursor_data.tail = tail;
-                    cas_data.cursor_data.blocked = in_stealing;
-                }
-            }
+        // Dùng bản `strong`: chỉ thử một lần nên một cú trượt vu vơ của `weak` sẽ bị hiểu nhầm thành
+        // có người tranh chấp.
+        match self.anchor.compare_exchange(current, next, cas_data.success_order, cas_data.fail_order)
+        {
+            Ok(_) => Steal::Success(cas_data.pop_amount),
+            Err(_) => Steal::Busy,
         }
     }
 
@@ -813,6 +870,106 @@ mod test
         }
     }
 
+    // --- Steal: lấy hụt phải nói rõ vì sao ---
+
+    #[test]
+    #[should_panic(expected = "greater than zero")]
+    fn steal_voi_max_bang_khong_thi_panic()
+    {
+        let src = Ring::<u32>::new(4);
+        let dst = Ring::<u32>::new(4);
+        let _ = src.try_steal_batch_to(0, &dst);
+    }
+
+    #[test]
+    fn steal_tu_ring_rong_thi_bao_empty()
+    {
+        let src = Ring::<u32>::new(4);
+        let dst = Ring::<u32>::new(4);
+        assert_eq!(src.try_steal_batch_to(4, &dst), Steal::Empty);
+    }
+
+    #[test]
+    fn steal_khi_dich_day_thi_bao_busy_chu_khong_bao_empty()
+    {
+        // Nguồn vẫn còn nguyên hàng, chỉ là đích không có chỗ nhận. Kẻ trộm cần phân biệt được hai
+        // chuyện này để khỏi gạch tên một nạn nhân đang đầy việc.
+        let src = Ring::new(4);
+        let dst = Ring::new(2);
+        for i in 0..4u32
+        {
+            assert_eq!(src.push(i), Ok(()));
+        }
+        for i in 0..2u32
+        {
+            assert_eq!(dst.push(100 + i), Ok(()));
+        }
+
+        assert_eq!(src.try_steal_batch_to(4, &dst), Steal::Busy);
+        assert_eq!(cursors(&src), (0, 0, 4), "lần steal hụt không được đụng vào con trỏ nguồn");
+    }
+
+    #[test]
+    fn steal_thanh_cong_thi_bao_dung_so_luong()
+    {
+        let src = Ring::new(8);
+        let dst = Ring::<u32>::new(8);
+        for i in 0..5u32
+        {
+            assert_eq!(src.push(i), Ok(()));
+        }
+
+        assert_eq!(src.try_steal_batch_to(3, &dst), Steal::Success(3));
+        assert_eq!(src.try_steal_batch_to(8, &dst), Steal::Success(2), "chỉ còn 2 phần tử thì lấy 2");
+        assert_eq!(src.try_steal_batch_to(8, &dst), Steal::Empty);
+        for i in 0..5u32
+        {
+            assert_eq!(peek(&dst, i), i, "thứ tự FIFO của nguồn phải được giữ nguyên");
+        }
+    }
+
+    // --- try_steal_one: trộm một việc, cầm luôn giá trị về ---
+
+    #[test]
+    fn steal_one_tren_ring_rong_thi_bao_empty()
+    {
+        let ring = Ring::<u32>::new(4);
+        assert_eq!(ring.try_steal_one(), Steal::Empty);
+        assert_eq!(cursors(&ring), (0, 0, 0), "steal hụt không được đụng vào con trỏ");
+    }
+
+    #[test]
+    fn steal_one_lay_phan_tu_cu_nhat_truoc()
+    {
+        // Chủ ăn từ đầu `tail`, kẻ trộm ăn từ đầu `in_stealing`, nên hai bên không giẫm chân nhau.
+        let ring = Ring::new(4);
+        for i in 0..4u32
+        {
+            assert_eq!(ring.push(i), Ok(()));
+        }
+
+        assert_eq!(ring.try_steal_one(), Steal::Success(0));
+        assert_eq!(ring.try_steal_one(), Steal::Success(1));
+        assert_eq!(cursors(&ring), (2, 2, 4), "stolen và in_stealing phải nhích cùng nhịp");
+        assert_eq!(ring.pop_lifo(), Some(3), "chủ vẫn lấy được phần tử mới nhất");
+        assert_eq!(ring.try_steal_one(), Steal::Success(2));
+        assert_eq!(ring.try_steal_one(), Steal::Empty);
+    }
+
+    #[test]
+    fn steal_one_tra_lai_o_trong_cho_producer()
+    {
+        let ring = Ring::new(2);
+        assert_eq!(ring.push(1), Ok(()));
+        assert_eq!(ring.push(2), Ok(()));
+        assert_eq!(ring.push(3), Err(3), "ring đang đầy");
+
+        assert_eq!(ring.try_steal_one(), Steal::Success(1));
+        assert_eq!(ring.push(3), Ok(()), "trộm xong thì ô vừa trống phải dùng lại được");
+        assert_eq!(ring.try_steal_one(), Steal::Success(2));
+        assert_eq!(ring.try_steal_one(), Steal::Success(3));
+    }
+
     // --- Consumer ---
 
     #[test]
@@ -836,6 +993,47 @@ mod test
         let src = Ring::<u32>::new(16);
         let dst = Ring::<u32>::new(16);
         assert_eq!(src.consumer(&dst).pop_batch(), 0);
+    }
+
+    #[test]
+    fn consumer_try_steal_noi_ro_ly_do_khi_lay_hut()
+    {
+        let src = Ring::new(16);
+        let dst = Ring::<u32>::new(16);
+        assert_eq!(src.consumer(&dst).try_steal(), Steal::Empty, "nguồn cạn thì phải là Empty");
+
+        for i in 0..4u32
+        {
+            assert_eq!(src.push(i), Ok(()));
+        }
+        assert_eq!(src.consumer(&dst).try_steal(), Steal::Success(4));
+
+        let dst_day = Ring::<u32>::new(1);
+        assert_eq!(dst_day.push(9), Ok(()));
+        for i in 0..4u32
+        {
+            assert_eq!(src.push(i), Ok(()));
+        }
+        assert_eq!(src.consumer(&dst_day).try_steal(), Steal::Busy, "đích hết chỗ thì phải là Busy");
+    }
+
+    #[test]
+    fn consumer_steal_one_lay_dung_mot_viec()
+    {
+        let src = Ring::new(8);
+        let dst = Ring::<u32>::new(8);
+        for i in 0..3u32
+        {
+            assert_eq!(src.push(i), Ok(()));
+        }
+
+        let consumer = src.consumer(&dst);
+        assert_eq!(consumer.steal_one(), Some(0));
+        assert_eq!(consumer.try_steal_one(), Steal::Success(1));
+        assert_eq!(cursors(&dst), (0, 0, 0), "steal_one không đi qua deque đích");
+        assert_eq!(src.cursor_data().filled_slots(), 1);
+        assert_eq!(consumer.steal_one(), Some(2));
+        assert_eq!(consumer.steal_one(), None);
     }
 
     // --- một chủ, nhiều kẻ trộm chạy song song ---

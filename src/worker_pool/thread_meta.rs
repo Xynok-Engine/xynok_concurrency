@@ -1,11 +1,11 @@
 use crate::sync::thread::{JoinHandle, Thread};
-pub struct WorkerData
+pub struct WorkerHandle
 {
     pub host:   Thread,
     pub handle: JoinHandle<()>,
 }
 
-impl WorkerData
+impl WorkerHandle
 {
     pub fn new(handle: JoinHandle<()>) -> Self
     {

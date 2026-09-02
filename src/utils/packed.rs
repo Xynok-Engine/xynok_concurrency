@@ -54,6 +54,16 @@ impl Packed
     {
         self.packed.compare_exchange_weak(current, new, success, fail)
     }
+
+    /// Bản `strong` của CAS: chỉ thất bại khi giá trị thật sự khác `current`.
+    ///
+    /// Dùng cho chỗ nào chỉ thử đúng một lần rồi bỏ đi, vì ở đó một cú trượt vu vơ của `weak` sẽ bị
+    /// hiểu nhầm thành có người tranh chấp. Còn nếu đằng nào cũng xoay vòng thì `weak` rẻ hơn.
+    #[inline]
+    pub fn compare_exchange(&self, current: u64, new: u64, success: Ordering, fail: Ordering) -> Result<u64, u64>
+    {
+        self.packed.compare_exchange(current, new, success, fail)
+    }
 }
 
 impl Debug for Packed

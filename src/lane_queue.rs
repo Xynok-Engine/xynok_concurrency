@@ -5,7 +5,7 @@
 //! mà ring local không tự bịt được: thread không phải worker thì không sở hữu ring nào để push, và
 //! ring thì có biên còn công việc thì không.
 //!
-//! Bản này dựng trên [`QueueBatching`], tức là một `Queue` dưới spinlock. Nó **không** lock-free,
+//! Bản này dựng trên [`QueueBatching`], tức là một `VecDeque` dưới spinlock. Nó **không** lock-free,
 //! và đó là lựa chọn có chủ ý cho giai đoạn này: mỗi lane giữ một hàng đợi riêng nên tranh chấp vốn
 //! đã thấp, còn một cấu trúc mình hiểu rõ thì sửa được lúc 2 giờ sáng. Mục 8.1 của
 //! [`docs/lanes.md`](../docs/lanes.md) ghi lại bản block lock-free và khi nào nên quay lại nó.
@@ -125,7 +125,7 @@ impl<T> LaneQueue<T>
     pub fn push(&self, val: T)
     {
         let mut queue = self.queue.get();
-        queue.enqueue(val);
+        queue.push_back(val);
         self.length.store(queue.len(), Ordering::Relaxed);
     }
 
@@ -134,7 +134,7 @@ impl<T> LaneQueue<T>
     where I: IntoIterator<Item = T>
     {
         let mut queue = self.queue.get();
-        queue.enqueue_batch(vals);
+        queue.extend(vals);
         self.length.store(queue.len(), Ordering::Relaxed);
     }
 
@@ -148,7 +148,7 @@ impl<T> LaneQueue<T>
         }
 
         let mut queue = self.queue.get();
-        let val = queue.dequeue();
+        let val = queue.pop_front();
         self.length.store(queue.len(), Ordering::Relaxed);
         val
     }
@@ -166,7 +166,8 @@ impl<T> LaneQueue<T>
         }
 
         let mut queue = self.queue.get();
-        let taken = queue.dequeue_batch(max, out);
+        let taken = max.min(queue.len());
+        out.extend(queue.drain(..taken));
         self.length.store(queue.len(), Ordering::Relaxed);
         taken
     }
@@ -189,14 +190,14 @@ impl<T> LaneQueue<T>
         let mut queue = self.queue.get();
         // Rỗng thật (ai đó vừa vét sạch giữa lúc mình đọc `len` và lúc giành được khoá): nhả khoá
         // và về tay không, đúng như khi đọc `len` thấy 0.
-        let first = queue.dequeue()?;
+        let first = queue.pop_front()?;
 
         let want = batch_size(queue.len(), workers, dst);
         if want > 0
         {
-            // `from_fn` giữ cho việc rút ra lười: `push_iter` chỉ gọi `dequeue` đúng số lần nó thực
+            // `from_fn` giữ cho việc rút ra lười: `push_iter` chỉ gọi `pop_front` đúng số lần nó thực
             // sự ghi được, nên không có job nào bị rút ra rồi phải nhét ngược lại.
-            dst.push_iter(std::iter::from_fn(|| queue.dequeue()).take(want));
+            dst.push_iter(std::iter::from_fn(|| queue.pop_front()).take(want));
         }
 
         self.length.store(queue.len(), Ordering::Relaxed);

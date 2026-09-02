@@ -1,13 +1,15 @@
-use xynok_std::collection::Queue;
+use std::collections::VecDeque;
 
 use crate::sync::cell::UnsafeCell;
 use crate::sync::{AtomicBool, Ordering};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
+use crate::utils::fixed_buffer::FixedRingBuffer;
 
+/// fifo, mpmc, growable, lockfree queue
 pub struct QueueBatching<T>
 {
-    elements: UnsafeCell<Queue<T>>,
+    elements: UnsafeCell<VecDeque<T>>,
     locked:   CachePadded<AtomicBool>,
 }
 
@@ -24,15 +26,15 @@ impl<T> QueueBatching<T>
 {
     pub fn new() -> Self
     {
-        Self::from_queue(Queue::new())
+        Self::from_queue(VecDeque::new())
     }
 
     pub fn with_capacity(capacity: usize) -> Self
     {
-        Self::from_queue(Queue::with_capacity(capacity))
+        Self::from_queue(VecDeque::with_capacity(capacity))
     }
 
-    fn from_queue(queue: Queue<T>) -> Self
+    fn from_queue(queue: VecDeque<T>) -> Self
     {
         Self {
             elements: UnsafeCell::new(queue),
@@ -50,7 +52,7 @@ impl<T> QueueBatching<T>
         {
             return QueueBatchingGuard { queue_batching: self };
         }
-        self.get_contended()
+        self.cas_get()
     }
 
     #[inline]
@@ -64,12 +66,12 @@ impl<T> QueueBatching<T>
     }
 
     #[inline]
-    pub fn get_mut(&mut self) -> &mut Queue<T>
+    pub fn get_mut(&mut self) -> &mut VecDeque<T>
     {
         self.elements.with_mut(|p| unsafe { &mut *p })
     }
 
-    pub fn take(self) -> Queue<T>
+    pub fn take(self) -> VecDeque<T>
     {
         let this = std::mem::ManuallyDrop::new(self);
         this.elements.with_mut(|p| unsafe { p.read() })
@@ -81,7 +83,7 @@ impl<T> QueueBatching<T>
     #[inline]
     pub fn push(&self, val: T)
     {
-        self.get().enqueue(val);
+        self.get().push_back(val);
     }
 
     #[inline]
@@ -89,7 +91,7 @@ impl<T> QueueBatching<T>
     where I: IntoIterator<Item = T>
     {
         let mut elements = self.get();
-        elements.enqueue_batch(values);
+        elements.extend(values);
     }
 }
 
@@ -98,7 +100,7 @@ impl<T> QueueBatching<T>
     #[inline]
     pub fn pop(&self) -> Option<T>
     {
-        self.get().dequeue()
+        self.get().pop_front()
     }
 
     pub fn pop_batch(&self, out: &mut Vec<T>, limit: usize) -> usize
@@ -109,7 +111,9 @@ impl<T> QueueBatching<T>
         }
 
         let mut elements = self.get();
-        elements.dequeue_batch(limit, out)
+        let taken = limit.min(elements.len());
+        out.extend(elements.drain(..taken));
+        taken
     }
 
     #[inline]
@@ -118,14 +122,43 @@ impl<T> QueueBatching<T>
         self.pop_batch(out, usize::MAX)
     }
 
+    /// Drains up to `max` elements and writes them directly into the `dst` ring buffer, starting at `write_start_cursor`. Returns the actual number of elements moved, which may be less than `max` if the queue is exhausted first.
+    #[inline]
+    pub fn drain_into_buffer(&self, max: usize, dst: &FixedRingBuffer<T>, write_start_cursor: u32) -> usize
+    {
+        if max == 0
+        {
+            return 0;
+        }
+        debug_assert!(
+            max <= dst.capacity(),
+            "`{}` chỉ có `{}` ô, không chứa nổi `{}` phần tử",
+            std::any::type_name::<FixedRingBuffer<T>>(),
+            dst.capacity(),
+            max
+        );
+
+        let mut elements = self.get();
+        let moved = max.min(elements.len());
+        for offset in 0..moved
+        {
+            let val = match elements.pop_front()
+            {
+                Some(val) => val,
+                None => return offset,
+            };
+            unsafe {
+                dst.write(write_start_cursor.wrapping_add(offset as u32), val);
+            }
+        }
+        moved
+    }
+
     pub fn clear(&self) -> usize
     {
-        let mut cleared = 0;
         let mut elements = self.get();
-        while elements.dequeue().is_some()
-        {
-            cleared += 1;
-        }
+        let cleared = elements.len();
+        elements.clear();
         cleared
     }
 }
@@ -154,7 +187,7 @@ impl<T> QueueBatching<T>
 impl<T> QueueBatching<T>
 {
     #[cold]
-    fn get_contended(&self) -> QueueBatchingGuard<'_, T>
+    fn cas_get(&self) -> QueueBatchingGuard<'_, T>
     {
         let mut backoff = Backoff::new();
         loop
@@ -196,7 +229,7 @@ impl<T> Drop for QueueBatchingGuard<'_, T>
 
 impl<T> std::ops::Deref for QueueBatchingGuard<'_, T>
 {
-    type Target = Queue<T>;
+    type Target = VecDeque<T>;
 
     #[inline]
     fn deref(&self) -> &Self::Target
@@ -230,9 +263,9 @@ impl<T> Default for QueueBatching<T>
     }
 }
 
-impl<T> From<Queue<T>> for QueueBatching<T>
+impl<T> From<VecDeque<T>> for QueueBatching<T>
 {
-    fn from(value: Queue<T>) -> Self
+    fn from(value: VecDeque<T>) -> Self
     {
         Self::from_queue(value)
     }
@@ -242,12 +275,7 @@ impl<T> FromIterator<T> for QueueBatching<T>
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self
     {
-        let mut queue = Queue::new();
-        for value in iter
-        {
-            queue.enqueue(value);
-        }
-        Self::from_queue(queue)
+        Self::from_queue(VecDeque::from_iter(iter))
     }
 }
 
@@ -255,11 +283,7 @@ impl<T> Extend<T> for QueueBatching<T>
 {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I)
     {
-        let elements = self.get_mut();
-        for value in iter
-        {
-            elements.enqueue(value);
-        }
+        self.get_mut().extend(iter);
     }
 }
 
@@ -282,6 +306,7 @@ mod test
 {
     use super::QueueBatching;
     use crate::sync::{AtomicUsize, Ordering};
+    use crate::utils::fixed_buffer::FixedRingBuffer;
     use std::sync::Arc;
 
     #[cfg(miri)]
@@ -296,6 +321,13 @@ mod test
             0 => 1,
             scaled => scaled,
         }
+    }
+
+    /// Rút `count` phần tử ra khỏi ring buffer để so sánh. Rút hẳn ra nên phần tử coi như đã bị
+    /// tiêu thụ, gọi hai lần trên cùng một khoảng là đọc lại ô đã trống.
+    fn read_back<T>(buffer: &FixedRingBuffer<T>, start: u32, count: usize) -> Vec<T>
+    {
+        (0..count as u32).map(|offset| unsafe { buffer.take_at(start.wrapping_add(offset)) }).collect()
     }
 
     #[test]
@@ -353,6 +385,93 @@ mod test
     }
 
     #[test]
+    fn drain_into_buffer_ghi_dung_thu_tu_va_ton_trong_max()
+    {
+        let queue = QueueBatching::new();
+        queue.push_batch(0..10);
+
+        let buffer = FixedRingBuffer::new(8);
+        let moved = queue.drain_into_buffer(4, &buffer, 0);
+
+        assert_eq!(moved, 4);
+        assert_eq!(read_back(&buffer, 0, moved), vec![0, 1, 2, 3]);
+        assert_eq!(queue.len(), 6, "phần còn lại vẫn nằm trong hàng đợi");
+
+        assert_eq!(queue.drain_into_buffer(0, &buffer, 0), 0, "max 0 không được chạm vào gì");
+        assert_eq!(queue.len(), 6);
+    }
+
+    #[test]
+    fn drain_into_buffer_dung_lai_khi_hang_doi_can()
+    {
+        let queue = QueueBatching::new();
+        queue.push_batch(0..3);
+
+        let buffer = FixedRingBuffer::new(8);
+        let moved = queue.drain_into_buffer(8, &buffer, 0);
+
+        assert_eq!(moved, 3, "hàng đợi chỉ có 3 thì chỉ chuyển được 3");
+        assert_eq!(read_back(&buffer, 0, moved), vec![0, 1, 2]);
+        assert!(queue.is_empty());
+
+        assert_eq!(queue.drain_into_buffer(4, &buffer, 3), 0, "rỗng thì trả 0");
+    }
+
+    #[test]
+    fn drain_into_buffer_ghi_tiep_tu_cursor_dang_do()
+    {
+        let queue = QueueBatching::new();
+        queue.push_batch(0..6);
+
+        let buffer = FixedRingBuffer::new(8);
+        assert_eq!(queue.drain_into_buffer(2, &buffer, 0), 2);
+        // Đợt sau nối ngay sau đợt trước, giống lúc worker nhích cursor rồi bơm tiếp.
+        assert_eq!(queue.drain_into_buffer(3, &buffer, 2), 3);
+
+        assert_eq!(read_back(&buffer, 0, 5), vec![0, 1, 2, 3, 4]);
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn drain_into_buffer_chay_vong_qua_cuoi_buffer()
+    {
+        let queue = QueueBatching::new();
+        queue.push_batch(0..4);
+
+        let buffer = FixedRingBuffer::new(4);
+        // Bắt đầu ngay sát điểm quấn của `u32` để chắc chắn `wrapping_add` không trượt ô.
+        let start = u32::MAX - 1;
+        let moved = queue.drain_into_buffer(4, &buffer, start);
+
+        assert_eq!(moved, 4);
+        assert_eq!(read_back(&buffer, start, moved), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn drain_into_buffer_chuyen_han_quyen_so_huu()
+    {
+        let alive = Arc::new(AtomicUsize::new(0));
+        let queue = QueueBatching::new();
+        queue.push_batch((0..3).map(|_| Arc::clone(&alive)));
+
+        let buffer = FixedRingBuffer::new(4);
+        let moved = queue.drain_into_buffer(3, &buffer, 0);
+
+        assert_eq!(moved, 3);
+        assert_eq!(Arc::strong_count(&alive), 4, "thả hàng đợi rồi thì buffer là chủ mới");
+
+        drop(queue);
+        assert_eq!(Arc::strong_count(&alive), 4);
+
+        // `FixedRingBuffer` không tự drop phần tử, phải rút tay ra cho hết.
+        for offset in 0..moved as u32
+        {
+            unsafe { buffer.drop_at(offset) };
+        }
+        assert_eq!(Arc::strong_count(&alive), 1);
+    }
+
+    #[test]
     fn guard_giu_khoa_cho_toi_khi_bi_tha()
     {
         let queue = QueueBatching::new();
@@ -361,9 +480,9 @@ mod test
             assert!(queue.is_locked());
             assert!(queue.try_get().is_none(), "khoá không đệ quy");
 
-            elements.enqueue(7);
-            elements.enqueue(8);
-            assert_eq!(elements.peek(), Some(&7));
+            elements.push_back(7);
+            elements.push_back(8);
+            assert_eq!(elements.front(), Some(&7));
             assert_eq!(elements.len(), 2);
         }
         assert!(!queue.is_locked(), "thả guard phải nhả khoá");
@@ -394,13 +513,13 @@ mod test
     {
         let mut queue = QueueBatching::new();
         queue.extend(0..3);
-        queue.get_mut().enqueue(3);
+        queue.get_mut().push_back(3);
 
         assert!(!queue.is_locked());
 
         let mut inner = queue.take();
         assert_eq!(inner.len(), 4);
-        assert_eq!(inner.dequeue(), Some(0));
+        assert_eq!(inner.pop_front(), Some(0));
     }
 
     #[test]
@@ -507,8 +626,8 @@ mod test
                 for _ in 0..rounds
                 {
                     let mut elements = queue.get();
-                    let value = elements.dequeue().expect("chỉ có đúng một phần tử, và ta đang giữ khoá");
-                    elements.enqueue(value + 1);
+                    let value = elements.pop_front().expect("chỉ có đúng một phần tử, và ta đang giữ khoá");
+                    elements.push_back(value + 1);
                 }
             }));
         }
