@@ -109,9 +109,17 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             write_start_cursor: cursor_data.tail,
             max_write_count:    take_amount,
         };
-        src.pop_batch_to(param);
-        self.anchor.fetch_add((take_amount as u64) << 32, Release);
-        take_amount
+        // `take_amount` mới chỉ là chỗ mình xin, còn lấy được bao nhiêu là chuyện của `src`: kẻ
+        // trộm khác có thể cướp mất một phần ngay giữa lúc này. Nhích `tail` theo con số đã xin sẽ
+        // để lộ những ô chưa ai ghi, và người trộm tiếp theo đọc trúng rác. Nhích theo con số thật.
+        let moved = src.pop_batch_to(param);
+        if moved < 1
+        {
+            return 0;
+        }
+
+        self.anchor.fetch_add((moved as u64) << 32, Release);
+        moved
     }
 
     /// Pops the newest element. Only the owner is permitted to call this.
@@ -565,6 +573,116 @@ mod test
         assert_eq!(ring.push_batch_by_taking_from(8, &src), 3);
         assert_eq!(cursors(&ring), (0, 0, 3));
         assert!(src.is_empty());
+    }
+
+    /// Vá cho cái lỗi: `push_batch_by_taking_from` từng nhích `tail` theo số ô nó **xin**, chứ
+    /// không theo số ô nó **lấy được**. Khi một kẻ trộm khác cướp mất một phần của nguồn ngay giữa
+    /// lúc đọc `len()` và lúc CAS, phần chênh lệch trở thành những ô chưa ai ghi mà `tail` vẫn nói
+    /// là có hàng. Người trộm kế tiếp đọc trúng rác.
+    ///
+    /// Cửa sổ race chỉ hé ra khi nguồn còn ít hơn một lô, nên chỉ thả một mớ vào rồi cùng rút thì
+    /// hoạ hoằn mới bắt được. Ở đây nguồn được giữ nông: một thread bơm vào từng cái một, ba tay
+    /// cùng rút ra, nên gần như lần nào `take_amount` cũng đúng bằng số hàng đang có và bất kỳ cú
+    /// trộm nào chen vào cũng làm lệch.
+    ///
+    /// Cộng sổ ở cuối: số ô `tail` của ring cộng phần kẻ trộm gom được phải đúng bằng số phần tử
+    /// đã bơm. Lệch lên nghĩa là `tail` đã đi quá phần thực có.
+    #[cfg(not(loom))]
+    #[test]
+    fn push_batch_khong_duoc_nhich_tail_qua_so_o_thuc_su_lay_duoc()
+    {
+        use crate::sync::Ordering::{Acquire as SyncAcquire, Relaxed as SyncRelaxed, Release as SyncRelease};
+        use crate::sync::{AtomicBool, AtomicUsize};
+
+        const TONG: u32 = 8_192;
+        /// Nguồn cố tình nhỏ, để nó luôn gần cạn và cửa sổ race luôn mở.
+        const SUC_CHUA_NGUON: usize = 16;
+        const KE_TROM: usize = 2;
+        const LO: usize = 8;
+        /// Trần cứng cho mọi vòng, để một ring hỏng không kéo test chạy mãi.
+        const TRAN_VONG_LAP: usize = 2_000_000;
+
+        let src = SpmcRingBufferFifo::<u32>::new(SUC_CHUA_NGUON);
+        let ring = Ring::<u32>::new(TONG as usize * 2);
+        let ke_trom_gom = AtomicUsize::new(0);
+        let da_bom_xong = AtomicBool::new(false);
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut con_lai = 0..TONG;
+                let mut val = con_lai.next();
+                for _ in 0..TRAN_VONG_LAP
+                {
+                    let Some(v) = val
+                    else
+                    {
+                        break;
+                    };
+                    match src.push(v)
+                    {
+                        Ok(()) => val = con_lai.next(),
+                        Err(_) => std::hint::spin_loop(),
+                    }
+                }
+                assert!(val.is_none(), "producer phải bơm hết {} phần tử", TONG);
+                da_bom_xong.store(true, SyncRelease);
+            });
+
+            for _ in 0..KE_TROM
+            {
+                scope.spawn(|| {
+                    let mut thung = Vec::new();
+                    for _ in 0..TRAN_VONG_LAP
+                    {
+                        let lay = src.pop_batch(LO, &mut thung);
+                        if lay > 0
+                        {
+                            ke_trom_gom.fetch_add(lay, SyncRelaxed);
+                            thung.clear();
+                        }
+                        else if da_bom_xong.load(SyncAcquire) && src.is_empty()
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            std::hint::spin_loop();
+                        }
+                    }
+                });
+            }
+
+            // Chủ sở hữu của `ring` phải là chính thread đã tạo nó, nên phần hút việc chạy ở đây
+            // chứ không đẩy sang thread con.
+            for _ in 0..TRAN_VONG_LAP
+            {
+                if src.is_empty()
+                {
+                    if da_bom_xong.load(SyncAcquire)
+                    {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                    continue;
+                }
+                if ring.push_batch_by_taking_from(LO, &src) == 0
+                {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        let (_, _, tail) = cursors(&ring);
+        let da_gom = ke_trom_gom.load(SyncRelaxed);
+        assert!(src.is_empty(), "nguồn phải bị rút cạn, còn lại {}", src.len());
+        assert_eq!(
+            tail as usize + da_gom,
+            TONG as usize,
+            "tail={} cộng phần kẻ trộm gom={} phải bằng {}, lệch lên nghĩa là tail đã nhích quá phần thực sự lấy được",
+            tail,
+            da_gom,
+            TONG
+        );
     }
 
     // --- consumer_pop_batch_to: consumer khác lấy việc theo thứ tự FIFO ---

@@ -39,6 +39,7 @@ Choosing the right data structure for task queues is critical when dealing with 
 ### Why LIFO Works for Stealing
 
 When another worker thread attempts to steal, it should also pull from the LIFO stack. This ensures that the thief takes the most recently spawned sub-task. This approach maintains the locality of the work and respects the implicit dependency order created by the recursive generation of tasks.
+In practice, however, this buffer does not function as a pure LIFO queue. Only the owner thread pops tasks in LIFO order, while other worker threads steal from the FIFO end. This design is intended to reduce contention between threads.
 
 ## Handling Dependencies and Deadlocks
 
