@@ -18,8 +18,8 @@ pub mod consumer;
 pub struct SpmcRingBufferLifoProduceFifoConsume<T>
 {
     buffer: FixedRingBuffer<T>,
-    head:   Packed,
-    tail:   CachePadded<AtomicU32>,
+    anchor: Packed,
+    stolen: CachePadded<AtomicU32>,
 
     #[cfg(debug_assertions)]
     owner_thread: crate::sync::thread::Thread,
@@ -27,26 +27,29 @@ pub struct SpmcRingBufferLifoProduceFifoConsume<T>
 
 unsafe impl<T: Send> Send for SpmcRingBufferLifoProduceFifoConsume<T> {}
 unsafe impl<T: Send> Sync for SpmcRingBufferLifoProduceFifoConsume<T> {}
+
 impl<T> Drop for SpmcRingBufferLifoProduceFifoConsume<T>
 {
     fn drop(&mut self)
     {
-        let (_, in_stealing) = unpack(self.head.load(Relaxed));
-        let tail = self.tail.load(Relaxed);
+        // Chỉ khoảng `[in_stealing, tail)` là còn hàng thật. Phần `[stolen, in_stealing)` đã bị kẻ
+        // trộm lấy đi rồi, drop nữa là double free.
+        let (tail, in_stealing) = self.anchor.load_unpack(Relaxed);
         for offset in 0..tail.wrapping_sub(in_stealing)
         {
             unsafe { self.buffer.drop_at(in_stealing.wrapping_add(offset)) };
         }
     }
 }
+
 impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
 {
     pub fn new(capacity: usize) -> Self
     {
         Self {
             buffer: FixedRingBuffer::new(capacity),
-            head: Packed::new(0, 0),
-            tail: CachePadded::new(AtomicU32::new(0)),
+            anchor: Packed::new(0, 0),
+            stolen: CachePadded::new(AtomicU32::new(0)),
             #[cfg(debug_assertions)]
             owner_thread: crate::sync::thread::current(),
         }
@@ -63,6 +66,7 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
     #[inline]
     pub fn push(&self, val: T) -> Result<(), T>
     {
+        #[cfg(debug_assertions)]
         debug_assert!(
             crate::sync::thread::current().id() == self.owner_thread.id(),
             "push must be called from owner thread"
@@ -77,13 +81,16 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             self.buffer.write(cursors.tail, val);
         }
 
-        self.tail.store(cursors.tail.wrapping_add(1), Release);
+        // Ghi dữ liệu xong mới công bố `tail`, và chỉ nhích nửa cao nên `in_stealing` của kẻ trộm
+        // không hề bị đụng tới.
+        self.anchor.fetch_add(1 << 32, Release);
         Ok(())
     }
 
     #[inline]
     pub(crate) fn push_batch_by_taking_from(&self, max: usize, src: &SpmcRingBufferFifo<T>) -> usize
     {
+        #[cfg(debug_assertions)]
         debug_assert!(
             crate::sync::thread::current().id() == self.owner_thread.id(),
             "push must be called from owner thread"
@@ -103,51 +110,45 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             max_write_count:    take_amount,
         };
         src.pop_batch_to(param);
-        self.tail.store(cursor_data.tail.wrapping_add(take_amount as u32), Release);
+        self.anchor.fetch_add((take_amount as u64) << 32, Release);
         take_amount
     }
 
+    /// Pops the newest element. Only the owner is permitted to call this.
     #[inline]
     pub(crate) fn pop_lifo(&self) -> Option<T>
     {
+        #[cfg(debug_assertions)]
         debug_assert!(
             crate::sync::thread::current().id() == self.owner_thread.id(),
             "pop lifo must be called from owner thread"
         );
         let mut cursor_data = self.cursor_data();
-
-        if cursor_data.filled_slots() < 1
+        loop
         {
-            return None;
-        }
-
-        match cursor_data.filled_slots() == 1
-        {
-            true =>
+            if cursor_data.filled_slots() < 1
             {
-                let params = ParamsCasForPopBatch {
-                    cursor_data:           &mut cursor_data,
-                    pop_amount:            1,
-                    success_order:         Release,
-                    fail_order:            Acquire,
-                    fetch_after_cas_order: Relaxed,
-                };
-
-                let pop_amount = self.fifo_try_cas_for_pop_batch(params)?;
-                let claim_start = cursor_data.in_stealing;
-                let result = unsafe { Some(self.buffer.take_at(cursor_data.in_stealing)) };
-
-                self.consumer_publish_stolen(claim_start, pop_amount as u32);
-                result
+                return None;
             }
-            false =>
+
+            let take_cursor = cursor_data.tail.wrapping_sub(1);
+            let current = pack(cursor_data.tail, cursor_data.in_stealing);
+            let next = pack(take_cursor, cursor_data.in_stealing);
+
+            match self.anchor.compare_exchange_weak(current, next, Release, Acquire)
             {
-                self.tail.fetch_sub(1, Release);
-                let take_cursor = cursor_data.tail.wrapping_sub(1);
-                unsafe { Some(self.buffer.take_at(take_cursor)) }
+                // `tail` lùi rồi thì ô này nằm ngoài tầm mọi kẻ trộm, đọc thoải mái.
+                Ok(_) => return unsafe { Some(self.buffer.take_at(take_cursor)) },
+                Err(c) =>
+                {
+                    let (tail, in_stealing) = unpack(c);
+                    cursor_data.tail = tail;
+                    cursor_data.in_stealing = in_stealing;
+                }
             }
         }
     }
+
     #[inline]
     pub(crate) fn consumer_pop_batch_to(&self, max: usize, other: &SpmcRingBufferLifoProduceFifoConsume<T>) -> usize
     {
@@ -183,43 +184,18 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             }
         }
         self.consumer_publish_stolen(claim_start, pop_amount as u32);
-        other.tail.store(other_cusror_data.tail.wrapping_add(pop_amount as u32), Release);
+        // `other` là deque của chính thread đang gọi nên không có ai push song song, nhưng vẫn dùng
+        // `fetch_add` để khỏi giẫm lên `in_stealing` mà kẻ trộm khác đang nhích.
+        other.anchor.fetch_add((pop_amount as u64) << 32, Release);
         pop_amount
     }
 }
 impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
 {
-    #[cold]
-    fn lifo_try_cas_for_pop_batch(&self, mut cas_data: ParamsCasForPopBatch) -> Option<usize>
-    {
-        debug_assert!(cas_data.pop_amount == 1, "pop lifo amount must be 1");
-        loop
-        {
-            let filled_slots = cas_data.cursor_data.filled_slots();
-            if filled_slots < 1
-            {
-                return None;
-            }
-            cas_data.pop_amount = cas_data.pop_amount.min(filled_slots);
-
-            match self.tail.compare_exchange_weak(
-                cas_data.cursor_data.tail,
-                cas_data.cursor_data.tail.wrapping_sub(1),
-                cas_data.success_order,
-                cas_data.fail_order,
-            )
-            {
-                Ok(_) => return Some(cas_data.pop_amount),
-                Err(c) =>
-                {
-                    let (stolen, in_progress) = self.head.load_unpack(cas_data.fetch_after_cas_order);
-                    cas_data.cursor_data.stolen = stolen;
-                    cas_data.cursor_data.in_stealing = in_progress;
-                    cas_data.cursor_data.tail = c;
-                }
-            }
-        }
-    }
+    /// Giành trước một lô ở đầu `in_stealing`, trả về số lượng giành được.
+    ///
+    /// Note: Since this is an SPMC implementation, we do not increment the stolen count during the
+    /// CAS operation. The caller must handle this after successfully popping the value.
     #[cold]
     fn fifo_try_cas_for_pop_batch(&self, mut cas_data: ParamsCasForPopBatch) -> Option<usize>
     {
@@ -233,45 +209,46 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             }
             cas_data.pop_amount = cas_data.pop_amount.min(filled_slots);
 
-            let current_head = pack(cas_data.cursor_data.stolen, cas_data.cursor_data.in_stealing);
-
-            let next_head = pack(
-                cas_data.cursor_data.stolen,
+            let current = pack(cas_data.cursor_data.tail, cas_data.cursor_data.in_stealing);
+            let next = pack(
+                cas_data.cursor_data.tail,
                 // reserve a slot for the pop operation, creating a barrier for other consumers
                 cas_data.cursor_data.in_stealing.wrapping_add(cas_data.pop_amount as u32),
             );
 
-            match self
-                .head
-                .compare_exchange_weak(current_head, next_head, cas_data.success_order, cas_data.fail_order)
+            match self.anchor.compare_exchange_weak(current, next, cas_data.success_order, cas_data.fail_order)
             {
                 Ok(_) => return Some(cas_data.pop_amount),
                 Err(c) =>
                 {
-                    let tail = self.tail.load(cas_data.fetch_after_cas_order);
-                    let (stolen, in_progress) = unpack(c);
-                    cas_data.cursor_data.stolen = stolen;
-                    cas_data.cursor_data.in_stealing = in_progress;
+                    // `tail` về cùng nhịp với `in_stealing` nên không thể lệch nhau. Đây đúng là
+                    // chỗ giữ cho `pop_amount` ở vòng sau không bao giờ ôm nhầm ô của chủ.
+                    let (tail, in_stealing) = unpack(c);
                     cas_data.cursor_data.tail = tail;
+                    cas_data.cursor_data.in_stealing = in_stealing;
                 }
             }
         }
     }
+
+    /// Công bố phần vừa lấy xong, theo đúng thứ tự đã giành.
+    ///
+    /// Ai giành trước công bố trước, nên người tới sau phải chờ tới lượt. Nhờ vậy `stolen` không
+    /// bao giờ nhảy qua một lô còn đang dở, và producer nhìn vào `stolen` là biết chắc ô nào đã
+    /// hết người đọc.
     #[cold]
     fn consumer_publish_stolen(&self, start: u32, amount: u32)
     {
         let mut backoff = Backoff::new();
         loop
         {
-            let current = self.head.load(Acquire);
-            let (stolen, in_stealing) = unpack(current);
-            if stolen != start
+            let current = self.stolen.load(Acquire);
+            if current != start
             {
                 backoff.snooze();
                 continue;
             }
-            let next = pack(stolen.wrapping_add(amount), in_stealing);
-            match self.head.compare_exchange_weak(current, next, Release, Relaxed)
+            match self.stolen.compare_exchange_weak(current, current.wrapping_add(amount), Release, Relaxed)
             {
                 Ok(_) => return,
                 Err(_) => backoff.snooze(),
@@ -282,12 +259,12 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
     #[inline]
     fn cursor_data(&self) -> CursorData
     {
-        let (stolen, in_progress) = self.head.load_unpack(Acquire);
-        let tail = self.tail.load(Relaxed);
+        let (tail, in_stealing) = self.anchor.load_unpack(Acquire);
+        let stolen = self.stolen.load(Acquire);
 
         CursorData {
             stolen:      stolen,
-            in_stealing: in_progress,
+            in_stealing: in_stealing,
             tail:        tail,
             capacity:    self.buffer.capacity() as u32,
             mask:        self.buffer.mask(),
@@ -847,7 +824,6 @@ mod test
     // cửa sổ này hay mở ra nhất.
     #[cfg(not(loom))]
     #[test]
-    //#[ignore = "đang lỗi: nhánh nhanh của pop_lifo còn tranh chấp với lô của kẻ trộm, xem ghi chú trên test"]
     fn chu_vua_pop_lifo_vua_bi_trom_lay_lo()
     {
         use crate::sync::AtomicBool;
@@ -936,12 +912,12 @@ mod test
                     }
                     backoff.reset();
 
+                    // Chủ tự rút một việc sau mỗi hai lần nạp, giữ cho hàng luôn quanh quẩn 1..3
+                    // phần tử, đúng chỗ hai đầu chạm nhau.
                     if val % 2 == 0
+                        && let Some(v) = victim.pop_lifo()
                     {
-                        if let Some(v) = victim.pop_lifo()
-                        {
-                            cua_chu.push(v);
-                        }
+                        cua_chu.push(v);
                     }
                 }
                 // Vét nốt phần chủ còn ôm rồi mới báo xong, để kẻ trộm nào thấy cờ kèm một lần vét
