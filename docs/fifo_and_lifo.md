@@ -1,7 +1,7 @@
 ---
 title: FIFO & LIFO, why it matter ?
 excerpt: The problem when using FIFO in a Task Pool
-cover img: https://i.ytimg.com/vi/8FHoL9KRrdk/sddefault.jpg
+cover img: "../images/fifo_lifo.png"
 tags:
   - concurrency
   - data_structure
