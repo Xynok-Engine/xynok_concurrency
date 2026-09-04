@@ -5,7 +5,7 @@ use crate::utils::backoff::Backoff;
 use crate::utils::bits::{pack, unpack};
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::cursors::CursorData;
-use crate::utils::fixed_buffer::FixedRingBuffer;
+use crate::utils::fixed_ring_buffer::FixedRingBuffer;
 use crate::utils::packed::Packed;
 
 use crate::collection::ring_buffer::spmc_fifo::consumer::Consumer;

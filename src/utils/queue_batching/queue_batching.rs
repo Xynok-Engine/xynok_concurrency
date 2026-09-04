@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
 
 use crate::sync::cell::UnsafeCell;
-use crate::sync::{AtomicBool, Ordering};
+use crate::sync::{AtomicBool, AtomicUsize, Ordering};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
-use crate::utils::fixed_buffer::FixedRingBuffer;
+use crate::utils::fixed_ring_buffer::FixedRingBuffer;
+use crate::utils::queue_batching::batch_size::batch_size;
+use crate::utils::queue_batching::local_queue::LocalQueue;
 use crate::utils::queue_batching::queue_batching_guard::QueueBatchingGuard;
 
 /// Hàng đợi vào trước ra trước cho nhiều người đẩy và nhiều người rút, sức chứa tự nới.
@@ -15,6 +17,16 @@ pub struct QueueBatching<T>
 {
     pub(super) elements: UnsafeCell<VecDeque<T>>,
     pub(super) locked:   CachePadded<AtomicBool>,
+    /// Bản sao độ dài đọc được mà không cần giành quyền.
+    ///
+    /// Người giữ vé cập nhật nó ngay trước lúc nhả quyền, nên tại mỗi thời điểm quyền được nhả thì
+    /// nó luôn đúng. Người đọc thấy giá trị cũ vài nhịp là chuyện bình thường: họ chỉ dùng nó để
+    /// quyết định có bõ công giành quyền hay không, đoán sai thì lần giành quyền tiếp theo nói sự
+    /// thật.
+    ///
+    /// Một chỗ *không* được phép dựa vào nó: quyết định cho thread đi ngủ. Đọc ra `0` rồi park có
+    /// thể bỏ lỡ phần tử vừa được đẩy vào. Chống lost wakeup là việc của giao thức ngủ ở tầng trên.
+    pub(super) len:      CachePadded<AtomicUsize>,
 }
 
 unsafe impl<T: Send> Send for QueueBatching<T> {}
@@ -34,9 +46,11 @@ impl<T> QueueBatching<T>
 
     fn from_queue(queue: VecDeque<T>) -> Self
     {
+        let len = queue.len();
         Self {
             elements: UnsafeCell::new(queue),
             locked:   CachePadded::new(AtomicBool::new(false)),
+            len:      CachePadded::new(AtomicUsize::new(len)),
         }
     }
 }
@@ -65,11 +79,18 @@ impl<T> QueueBatching<T>
         }
     }
 
-    /// Mượn thẳng hàng đợi khi đã cầm tham chiếu độc quyền, khỏi cần đụng tới cờ.
+    /// Mượn hàng đợi khi đã cầm tham chiếu độc quyền: không bao giờ phải chờ ai.
+    ///
+    /// Vẫn trả về vé chứ không phải tham chiếu trần, để [`Self::len`] được cập nhật lúc thả vé
+    /// giống hệt mọi đường khác.
     #[inline]
-    pub fn get_mut(&mut self) -> &mut VecDeque<T>
+    pub fn get_mut(&mut self) -> QueueBatchingGuard<'_, T>
     {
-        self.elements.with_mut(|p| unsafe { &mut *p })
+        // Không ai khác cầm được `&self` trong lúc mình đang giữ `&mut self`, nên quyền chắc chắn
+        // đang rảnh và lần thử này không thể trượt.
+        debug_assert!(!self.is_locked(), "giữ `&mut self` mà quyền vẫn đang bị chiếm");
+        self.locked.store(true, Ordering::Relaxed);
+        QueueBatchingGuard { queue_batching: self }
     }
 
     /// Tháo vỏ ra, lấy lại hàng đợi bên trong.
@@ -93,8 +114,7 @@ impl<T> QueueBatching<T>
     pub fn push_batch<I>(&self, values: I)
     where I: IntoIterator<Item = T>
     {
-        let mut elements = self.get();
-        elements.extend(values);
+        self.get().extend(values);
     }
 }
 
@@ -103,13 +123,19 @@ impl<T> QueueBatching<T>
     #[inline]
     pub fn pop(&self) -> Option<T>
     {
+        // Nhìn `len` trước để khỏi tốn một lần giành quyền lúc hàng đợi rỗng. Đọc trúng giá trị cũ
+        // cũng không sao: về tay không đúng bằng lúc đọc trúng `0` thật.
+        if self.is_empty()
+        {
+            return None;
+        }
         self.get().pop_front()
     }
 
     /// Rút tối đa `limit` phần tử, nối thêm vào `out`, trả về số phần tử thật sự lấy được.
     pub fn pop_batch(&self, out: &mut Vec<T>, limit: usize) -> usize
     {
-        if limit == 0
+        if limit == 0 || self.is_empty()
         {
             return 0;
         }
@@ -132,7 +158,7 @@ impl<T> QueueBatching<T>
     #[inline]
     pub fn drain_into_buffer(&self, max: usize, dst: &FixedRingBuffer<T>, write_start_cursor: u32) -> usize
     {
-        if max == 0
+        if max == 0 || self.is_empty()
         {
             return 0;
         }
@@ -146,13 +172,8 @@ impl<T> QueueBatching<T>
 
         let mut elements = self.get();
         let moved = max.min(elements.len());
-        for offset in 0..moved
+        for (offset, val) in elements.drain(..moved).enumerate()
         {
-            let val = match elements.pop_front()
-            {
-                Some(val) => val,
-                None => return offset,
-            };
             unsafe {
                 dst.write(write_start_cursor.wrapping_add(offset as u32), val);
             }
@@ -160,6 +181,39 @@ impl<T> QueueBatching<T>
         moved
     }
 
+    /// Đường ra chính của một worker: giữ một phần tử để chạy ngay, đổ phần còn lại thẳng vào hàng
+    /// đợi riêng của nó.
+    ///
+    /// `workers` là số người đang chia nhau hàng đợi này. Không có nó thì người tới trước hốt sạch
+    /// và những người sau vẫn đói, dù nhìn vào tổng thì thừa việc cho tất cả. Cụm lấy về cũng luôn
+    /// chừa lại nửa `dst` trống, cho việc con mà chính người gọi sắp đẻ ra.
+    ///
+    /// Trả `None` khi hàng đợi rỗng. Trả `Some(val)` thì phần tử đó là của người gọi, chạy nó ngay,
+    /// phần đã nạp vào `dst` để lại lấy sau.
+    pub fn steal_batch_and_pop<Q>(&self, dst: &mut Q, workers: usize) -> Option<T>
+    where Q: LocalQueue<T>
+    {
+        if self.is_empty()
+        {
+            return None;
+        }
+
+        let mut elements = self.get();
+        // Rỗng thật (ai đó vừa vét sạch giữa lúc mình đọc `len` và lúc giành được quyền): nhả quyền
+        // và về tay không, đúng như khi đọc `len` thấy 0.
+        let first = elements.pop_front()?;
+
+        let want = batch_size(elements.len(), workers, dst);
+        if want > 0
+        {
+            // `from_fn` giữ cho việc rút ra lười: `push_iter` chỉ gọi `pop_front` đúng số lần nó
+            // thực sự ghi được, nên không có phần tử nào bị rút ra rồi phải nhét ngược lại.
+            dst.push_iter(std::iter::from_fn(|| elements.pop_front()).take(want));
+        }
+        Some(first)
+    }
+
+    /// Vét sạch hàng đợi, trả về số phần tử vừa bỏ đi.
     pub fn clear(&self) -> usize
     {
         let mut elements = self.get();
@@ -171,16 +225,17 @@ impl<T> QueueBatching<T>
 
 impl<T> QueueBatching<T>
 {
+    /// Số phần tử đang chờ, đọc không cần giành quyền. Xem ghi chú ở [`Self::len`].
     #[inline]
     pub fn len(&self) -> usize
     {
-        self.get().len()
+        self.len.load(Ordering::Relaxed)
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool
     {
-        self.get().is_empty()
+        self.len() == 0
     }
 
     #[inline]
@@ -218,9 +273,14 @@ impl<T> QueueBatching<T>
         self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
     }
 
+    /// Record the length and then release the lock, in that exact order.
+    /// `len` comes first, and the `store` release of `locked` enforces the order.
+    /// This ensures that anyone who acquires the lock after us will see the updated value.
+    /// `len` itself only requires `Relaxed` ordering: it does not guard any memory, and readers do not access the elements based on its value.
     #[inline]
-    pub(super) fn unlock(&self)
+    pub(super) fn release(&self, len: usize)
     {
+        self.len.store(len, Ordering::Relaxed);
         self.locked.store(false, Ordering::Release);
     }
 }

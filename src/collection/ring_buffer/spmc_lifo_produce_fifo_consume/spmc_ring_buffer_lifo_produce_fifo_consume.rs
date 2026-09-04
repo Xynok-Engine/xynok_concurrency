@@ -6,8 +6,9 @@ use crate::utils::backoff::Backoff;
 use crate::utils::bits::{pack, unpack};
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::cursors::CursorData;
-use crate::utils::fixed_buffer::FixedRingBuffer;
+use crate::utils::fixed_ring_buffer::FixedRingBuffer;
 use crate::utils::packed::Packed;
+use crate::utils::queue_batching::QueueBatching;
 use crate::utils::steal::Steal;
 
 use crate::collection::ring_buffer::spmc_lifo_produce_fifo_consume::consumer::Consumer;
@@ -20,9 +21,6 @@ pub struct SpmcRingBufferLifoProduceFifoConsume<T>
     pub(crate) buffer: FixedRingBuffer<T>,
     anchor:            Packed,
     stolen:            CachePadded<AtomicU32>,
-
-    #[cfg(debug_assertions)]
-    owner_thread: crate::sync::thread::Thread,
 }
 
 unsafe impl<T: Send> Send for SpmcRingBufferLifoProduceFifoConsume<T> {}
@@ -50,14 +48,23 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
             buffer: FixedRingBuffer::new(capacity),
             anchor: Packed::new(0, 0),
             stolen: CachePadded::new(AtomicU32::new(0)),
-            #[cfg(debug_assertions)]
-            owner_thread: crate::sync::thread::current(),
         }
+    }
+    #[inline]
+    pub fn buffer(&self) -> &FixedRingBuffer<T>
+    {
+        &self.buffer
     }
 
     pub fn consumer<'a>(&'a self, dst: &'a SpmcRingBufferLifoProduceFifoConsume<T>) -> Consumer<'a, T>
     {
         Consumer::new(self, dst)
+    }
+    #[inline]
+    pub fn tail(&self) -> u32
+    {
+        let (tail, _) = self.anchor.load_unpack(Relaxed);
+        tail
     }
 }
 impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
@@ -66,11 +73,6 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
     #[inline]
     pub fn push(&self, val: T) -> Result<(), T>
     {
-        #[cfg(debug_assertions)]
-        debug_assert!(
-            crate::sync::thread::current().id() == self.owner_thread.id(),
-            "push must be called from owner thread"
-        );
         let cursors = self.cursor_data();
         if cursors.empty_slots() < 1
         {
@@ -87,14 +89,36 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
         Ok(())
     }
 
+    /// Nạp một lô việc từ hàng đợi chung `src` vào ring này, trả về số phần tử thật sự nạp được.
+    ///
+    /// Chỉ chủ ring được gọi, vì nó là người duy nhất có quyền nhích `tail`.
+    #[inline]
+    pub(crate) fn push_batch_by_taking_from_queue(&self, max: usize, src: &QueueBatching<T>) -> usize
+    {
+        debug_assert!(max > 0, "The push batch size must be greater than zero.");
+        let cursor_data = self.cursor_data();
+        let take_amount = cursor_data.empty_slots().min(max).min(src.len());
+        if take_amount < 1
+        {
+            return 0;
+        }
+
+        // `src.len()` chỉ là ảnh chụp không khoá, người khác có thể vét trước nên số lấy về thật sự
+        // có thể ít hơn. Nhích `tail` theo số thật, nhích theo số đã hỏi là hở ra mấy ô chưa ghi cho
+        // kẻ trộm kế tiếp đọc phải rác.
+        let moved = src.drain_into_buffer(take_amount, &self.buffer, cursor_data.tail);
+        if moved < 1
+        {
+            return 0;
+        }
+
+        // Ghi xong hết mới công bố `tail`, và chỉ đụng nửa cao nên `in_stealing` của kẻ trộm vẫn nguyên.
+        self.anchor.fetch_add((moved as u64) << 32, Release);
+        moved
+    }
     #[inline]
     pub(crate) fn push_batch_by_taking_from(&self, max: usize, src: &SpmcRingBufferFifo<T>) -> usize
     {
-        #[cfg(debug_assertions)]
-        debug_assert!(
-            crate::sync::thread::current().id() == self.owner_thread.id(),
-            "push must be called from owner thread"
-        );
         let src_len = src.len();
         debug_assert!(max > 0, "The push batch size must be greater than zero.");
         let cursor_data = self.cursor_data();
@@ -126,11 +150,6 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
     #[inline]
     pub(crate) fn pop_lifo(&self) -> Option<T>
     {
-        #[cfg(debug_assertions)]
-        debug_assert!(
-            crate::sync::thread::current().id() == self.owner_thread.id(),
-            "pop lifo must be called from owner thread"
-        );
         let mut cursor_data = self.cursor_data();
         loop
         {

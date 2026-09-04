@@ -1,7 +1,7 @@
 //! Cấu hình dựng pool.
 
 use crate::apis::priority::Priority;
-use crate::utils::cores::available_cores;
+use crate::utils::available_cores;
 
 #[cfg(doc)] use super::ThreadPool;
 #[cfg(doc)] use crate::utils::backoff::Backoff;

@@ -3,12 +3,12 @@
 use crate::apis::priority::Priority;
 use crate::bump::Bump;
 use crate::custom_type::Job;
-use crate::lane_queue::LaneQueue;
 use crate::per_worker::PerWorker;
 use crate::sync::AtomicBool;
 use crate::sync::thread::{self, ThreadId};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
+use crate::utils::queue_batching::QueueBatching;
 
 use super::consts::{IDLE_NAP, LANE_QUEUE_TICK};
 use super::context::{CONTEXT, Context, SELF_ID};
@@ -23,7 +23,7 @@ use super::worker::{run_in_loop, run_job};
 pub(crate) struct Shared
 {
     /// Chỗ job từ ngoài pool rơi vào, và chỗ hứng phần bị xả ra khỏi ring.
-    pub(super) lane_queue:  LaneQueue<Job>,
+    pub(super) lane_queue:  QueueBatching<Job>,
     /// Một ô cho mỗi người tham gia: `workers` worker, cộng host ở chỉ số cuối.
     pub(super) locals:      Box<[CachePadded<Local>]>,
     pub(super) sleep:       Sleep,

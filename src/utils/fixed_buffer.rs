@@ -1,14 +1,12 @@
-use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::sync::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 
-pub struct FixedRingBuffer<T>
+pub struct FixedBuffer<T>
 {
     cells: Box<[UnsafeCell<MaybeUninit<T>>]>,
-    mask:  u32,
 }
 
-impl<T> FixedRingBuffer<T>
+impl<T> FixedBuffer<T>
 {
     #[track_caller]
     pub fn new(capacity: usize) -> Self
@@ -19,40 +17,14 @@ impl<T> FixedRingBuffer<T>
             std::any::type_name::<Self>(),
             capacity
         );
-        debug_assert!(
-            capacity < MAX_CAPACITY,
-            "`{}` capacity `{}` exceeds `{}` limit for wrapping u32 indices",
-            std::any::type_name::<Self>(),
-            capacity,
-            MAX_CAPACITY
-        );
-        debug_assert!(
-            capacity.is_power_of_two(),
-            "`{}` is initizealed with capacity `{}` is not power of 2 !",
-            std::any::type_name::<Self>(),
-            capacity
-        );
-        Self {
-            cells: allocate(capacity),
-            mask:  (capacity - 1) as u32,
-        }
+        Self { cells: allocate(capacity) }
     }
 
     #[inline]
-    pub fn capacity(&self) -> usize
+    pub fn len(&self) -> usize
     {
-        self.mask as usize + 1
+        self.cells.len()
     }
-
-    #[inline]
-    pub fn mask(&self) -> u32
-    {
-        self.mask
-    }
-
-    /// A pointer to the first memory cell, useful for prefetching or address comparison.
-    /// The buffer does not track which cells contain data, so avoid reading from or writing to this pointer unless you are certain the cell has been initialized via [`Self::write`].
-    /// The `loom` version lacks this function because `loom::cell::UnsafeCell` wraps additional metadata, meaning the memory layout no longer matches a standard `T` array.
     #[cfg(not(loom))]
     #[inline]
     pub fn ptr(&self) -> *const T
@@ -61,13 +33,13 @@ impl<T> FixedRingBuffer<T>
     }
 
     #[inline]
-    fn at(&self, cursor: u32) -> &UnsafeCell<MaybeUninit<T>>
+    pub fn at(&self, cursor: usize) -> &UnsafeCell<MaybeUninit<T>>
     {
-        unsafe { self.cells.get_unchecked((cursor & self.mask) as usize) }
+        unsafe { self.cells.get_unchecked(cursor) }
     }
 
     #[inline]
-    pub unsafe fn write(&self, cursor: u32, val: T)
+    pub unsafe fn write(&self, cursor: usize, val: T)
     {
         self.at(cursor).with_mut(|p| unsafe {
             (*p).write(val);
@@ -75,13 +47,13 @@ impl<T> FixedRingBuffer<T>
     }
 
     #[inline]
-    pub unsafe fn take_at(&self, cursor: u32) -> T
+    pub unsafe fn take_at(&self, cursor: usize) -> T
     {
         self.at(cursor).with(|p| unsafe { (*p).assume_init_read() })
     }
 
     #[inline]
-    pub unsafe fn drop_at(&self, cursor: u32)
+    pub unsafe fn drop_at(&self, cursor: usize)
     {
         self.at(cursor).with_mut(|p| unsafe { (*p).assume_init_drop() });
     }

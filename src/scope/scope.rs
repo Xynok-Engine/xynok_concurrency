@@ -13,7 +13,7 @@ use crate::scope::scope_in::scope_in;
 use crate::scope::scope_ptr::ScopePtr;
 use crate::sync::cell::UnsafeCell;
 use crate::sync::{Arc, AtomicUsize, Mutex, Ordering};
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 
 /// Một vùng mà job spawn ra được phép mượn stack của người mở nó.
 ///
@@ -202,20 +202,18 @@ impl<'scope> Scope<'scope>
         let chunks = n.div_ceil(batch);
         let cursor = AtomicUsize::new(0);
 
-        let run = || {
-            loop
+        let run = || loop
+        {
+            let chunk = cursor.fetch_add(1, Ordering::Relaxed);
+            if chunk >= chunks
             {
-                let chunk = cursor.fetch_add(1, Ordering::Relaxed);
-                if chunk >= chunks
-                {
-                    break;
-                }
+                break;
+            }
 
-                let start = chunk * batch;
-                for i in start..(start + batch).min(n)
-                {
-                    f(i);
-                }
+            let start = chunk * batch;
+            for i in start..(start + batch).min(n)
+            {
+                f(i);
             }
         };
 

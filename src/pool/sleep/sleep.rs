@@ -5,7 +5,7 @@ use crate::pool::sleep::wake::Wake;
 use crate::sync::thread::{self, Thread};
 use crate::sync::{AtomicU32, AtomicU64, Mutex, Ordering};
 use crate::utils::cache_padded::CachePadded;
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 
 pub(crate) struct Sleep
 {

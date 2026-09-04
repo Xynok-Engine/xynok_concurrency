@@ -20,7 +20,11 @@ impl<T> Drop for QueueBatchingGuard<'_, T>
 {
     fn drop(&mut self)
     {
-        self.queue_batching.unlock();
+        // Chốt lại độ dài ngay trước lúc nhả quyền. Đây là chỗ duy nhất làm việc đó: vé cho mượn
+        // thẳng hàng đợi bên trong nên không ai đoán trước được người cầm vé đã đổi những gì, chỉ
+        // biết chắc là lúc này thì họ xong rồi.
+        let len = self.len();
+        self.queue_batching.release(len);
     }
 }
 

@@ -6,7 +6,7 @@ use crate::channel::inner::Inner;
 use crate::channel::waiter::Waiter;
 use crate::pool::ThreadPool;
 use crate::sync::{Arc, Ordering, thread};
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 
 /// Đầu nhận. Nhận được đúng một lần.
 pub struct Receiver<T>

@@ -390,7 +390,7 @@ Cứ 61 vòng thì ép ngó lane queue trước, kể cả ring local đang đ�
 
 - `spill_half` được [`pool::Shared::push_local`](../src/pool/mod.rs) gọi mỗi khi ring local đầy, và
   `ring_buffer_lifo` giờ cũng có bản của riêng nó.
-- `LaneQueue` có bộ đếm độ dài đọc được không cần khoá, xem [`src/lane_queue.rs`](../src/lane_queue.rs).
+- `QueueBatching` có bộ đếm độ dài đọc được không cần khoá, xem [`src/utils/queue_batching/`](../src/utils/queue_batching/).
 - Vòng lặp worker, nơi mọi thứ ở trên được lắp lại, nằm ở [`src/pool/mod.rs`](../src/pool/mod.rs).
 - Bộ đếm `lane_pops` và `spills` ([`src/pool/counters.rs`](../src/pool/counters.rs)) là chỗ nhìn ra
   lane queue đang được dùng nhiều tới mức nào, và cũng là số liệu để quyết định có nên đổi sang bản

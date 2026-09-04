@@ -1,6 +1,6 @@
 use crate::apis::priority::Priority;
 use crate::pool::Config;
-use crate::utils::cores::available_cores;
+use crate::utils::available_cores;
 
 /// Cách dựng cả bộ lane.
 #[derive(Debug, Clone)]

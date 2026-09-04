@@ -1,4 +1,4 @@
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 use std::fmt;
 use std::sync::{Condvar, Mutex, MutexGuard, TryLockError, WaitTimeoutResult};
 use std::time::Duration;

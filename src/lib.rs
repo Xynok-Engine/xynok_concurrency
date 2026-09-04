@@ -49,7 +49,6 @@ pub mod channel;
 pub mod collection;
 pub mod custom_type;
 pub mod job_graph;
-pub mod lane_queue;
 pub mod lanes;
 pub mod latch;
 pub mod mutex_condition;
@@ -62,6 +61,5 @@ pub mod ring_buffer_spsc;
 pub mod scope;
 pub mod task;
 pub mod utils;
-pub mod worker_pool;
-
+pub mod thread_pool;
 pub(crate) mod sync;

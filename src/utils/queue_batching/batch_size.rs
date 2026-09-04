@@ -1,14 +1,14 @@
-use crate::lane_queue::local_queue::LocalQueue;
+use crate::utils::queue_batching::local_queue::LocalQueue;
 
 /// Nạp thêm bao nhiêu vào ring là vừa.
 ///
 /// Con số này **không tính job chạy ngay**: nó được rút ra trước, và nó không chiếm ô nào của ring.
-/// Nên tổng số job rời hàng đợi trong một lượt là `1 + batch_size(...)`.
+/// Nên tổng số phần tử rời hàng đợi trong một lượt là `1 + batch_size(...)`.
 ///
 /// Ba cái chặn, lấy cái nhỏ nhất:
 ///
-/// - `len / workers + 1`: phần chia đều cho mọi worker của lane, cộng một để không bao giờ ra 0 khi
-///   còn việc.
+/// - `len / workers + 1`: phần chia đều cho mọi worker đang dùng chung hàng đợi, cộng một để không
+///   bao giờ ra 0 khi còn việc.
 /// - `capacity / 2`: chừa nửa ring trống cho job mà chính bạn sắp spawn ra. Nạp đầy ring rồi thì
 ///   job con đầu tiên đã phải spill ngược xuống hàng đợi lane.
 /// - `remaining`: chỗ trống thật sự còn lại. Chủ ring là người duy nhất được push và đang là bạn,

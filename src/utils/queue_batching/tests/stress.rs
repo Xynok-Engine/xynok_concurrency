@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::ring_buffer_fifo::RingBufferFifo;
 use crate::sync::{AtomicUsize, Ordering};
 use crate::utils::queue_batching::QueueBatching;
 
@@ -108,4 +109,102 @@ fn t1_guard_loai_tru_lan_nhau()
     }
 
     assert_eq!(queue.pop(), Some(THREADS * rounds));
+}
+
+/// Trần cứng ở đây là số phần tử cố định chia sẵn cho từng thread. Vòng gom không trần đã từng ăn
+/// hết RAM khi cấu trúc bên dưới hỏng, nên mọi thứ ở đây đều đếm được từ trước.
+#[test]
+fn t2_nhieu_thread_day_vao_khong_mat_phan_tu()
+{
+    const THREADS: usize = 8;
+
+    let per_thread = scaled(2_000);
+    let total = THREADS * per_thread;
+
+    let queue = Arc::new(QueueBatching::new());
+
+    std::thread::scope(|scope| {
+        for t in 0..THREADS
+        {
+            let queue = Arc::clone(&queue);
+            scope.spawn(move || {
+                for i in 0..per_thread
+                {
+                    match i % 3
+                    {
+                        0 => queue.push(t * per_thread + i),
+                        _ => queue.push_batch(std::iter::once(t * per_thread + i)),
+                    }
+                }
+            });
+        }
+    });
+
+    assert_eq!(queue.len(), total, "bộ đếm không khoá lệch so với số phần tử đã đẩy vào");
+
+    let mut seen = vec![false; total];
+    let mut out = Vec::with_capacity(total);
+    assert_eq!(queue.drain_into(&mut out), total);
+    for value in out
+    {
+        assert!(!seen[value], "phần tử {value} ra khỏi hàng đợi hai lần");
+        seen[value] = true;
+    }
+    assert!(seen.into_iter().all(|s| s), "có phần tử đẩy vào mà không bao giờ ra");
+    assert!(queue.is_empty());
+}
+
+/// Nhiều worker cùng rút, mỗi người một ring riêng: không phần tử nào ra hai lần, không phần tử nào
+/// biến mất.
+#[test]
+fn t3_nhieu_worker_cung_rut_khong_trung_khong_mat()
+{
+    const WORKERS: usize = 4;
+
+    let total = scaled(20_000);
+
+    let queue = Arc::new(QueueBatching::new());
+    queue.push_batch(0..total);
+
+    let taken: Vec<Vec<usize>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..WORKERS)
+            .map(|_| {
+                let queue = Arc::clone(&queue);
+                scope.spawn(move || {
+                    let mut ring: RingBufferFifo<usize> = RingBufferFifo::new(64);
+                    let (mut owner, _) = ring.split();
+                    let mut mine = Vec::new();
+
+                    // Trần cứng: nhiều nhất `total` vòng, nên một hàng đợi hỏng làm test *fail* chứ
+                    // không làm máy hết RAM.
+                    for _ in 0..total
+                    {
+                        match queue.steal_batch_and_pop(&mut owner, WORKERS)
+                        {
+                            Some(job) => mine.push(job),
+                            None => break,
+                        }
+                        while let Some(job) = owner.pop()
+                        {
+                            mine.push(job);
+                        }
+                    }
+                    owner.drain(&mut mine);
+                    mine
+                })
+            })
+            .collect();
+
+        handles.into_iter().map(|h| h.join().expect("worker panic")).collect()
+    });
+
+    assert!(queue.is_empty(), "còn {} phần tử kẹt lại trong hàng đợi", queue.len());
+
+    let mut seen = vec![false; total];
+    for job in taken.into_iter().flatten()
+    {
+        assert!(!seen[job], "phần tử {job} bị hai worker cùng nhận");
+        seen[job] = true;
+    }
+    assert!(seen.into_iter().all(|s| s), "có phần tử không worker nào nhận");
 }

@@ -15,7 +15,7 @@ use crate::task::consts::{DONE, IDLE, NOTIFIED, RUNNING, SCHEDULED};
 // sang `loom::sync::Arc`. Chỉ riêng `Arc<Task>` là bắt buộc phải của std, do `std::task::Wake` chỉ
 // nhận đúng loại đó.
 use crate::sync::Arc as PoolArc;
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 
 /// Một future cộng chỗ đứng của nó trong lane.
 pub struct Task

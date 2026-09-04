@@ -2,13 +2,13 @@ use std::future::Future;
 
 use crate::channel::{Receiver, oneshot};
 use crate::custom_type::Job;
-use crate::lane_queue::LaneQueue;
 use crate::lanes::lane_id::LaneId;
 use crate::lanes::lanes_config::LanesConfig;
 use crate::lanes::main_queue::MainQueue;
 use crate::pool::ThreadPool;
 use crate::sync::thread;
 use crate::task;
+use crate::utils::queue_batching::QueueBatching;
 
 /// Cả bộ lane, dựng một lần lúc khởi động.
 pub struct Lanes
@@ -34,7 +34,7 @@ impl Lanes
             compute:    ThreadPool::new(config.compute),
             async_lane: async_lane,
             main:       MainQueue {
-                jobs:   LaneQueue::new(),
+                jobs:   QueueBatching::new(),
                 thread: thread::current().id(),
             },
         }

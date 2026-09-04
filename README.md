@@ -34,7 +34,7 @@ I learned these concepts and implemented the types myself to sharpen my concurre
 - `src/ring_buffer_fifo/`: bounded lock-free work-stealing ring buffer, batch steal. See [docs/ring_buffer.md](docs/ring_buffer.md).
 - `src/ring_buffer_lifo/`: bounded Chase-Lev work-stealing deque, LIFO for the owner.
 - `src/ring_buffer_spsc/`: one writer, one reader, wait-free on both ends. This is how the audio thread receives commands without ever taking a lock or allocating.
-- `src/lane_queue.rs`: the lane-wide queue every non-worker pushes into, with a batch handoff into a local ring. See [docs/lane_queue.md](docs/lane_queue.md).
+- `src/utils/queue_batching/`: the lane-wide queue every non-worker pushes into, with a batch handoff into a local ring. See [docs/lane_queue.md](docs/lane_queue.md).
 - `src/utils/`: cache padding, backoff, spin lock, park/unpark waker, inline closures.
 
 ## Getting started

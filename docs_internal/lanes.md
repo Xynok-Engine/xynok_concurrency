@@ -43,7 +43,7 @@ này là mấy chỗ cố ý để lại, đều ghi rõ lý do tại chỗ: rea
 | `xynok_ecs` | dữ liệu và system | chunk archetype xong, **E1 tới E3 xong**: scheduler chạy được nhóm song song |
 
 **`xynok_concurrency` đang có**: ba ring (FIFO/LIFO SPMC kèm batch steal, và SPSC cho audio, đều có
-loom và stress), `InlineFn` 64 byte vừa một cache line, [`LaneQueue`](../src/lane_queue.rs),
+loom và stress), `InlineFn` 64 byte vừa một cache line, [`QueueBatching`](../src/utils/queue_batching/),
 [`ThreadPool`](../src/pool/mod.rs) work-stealing với giao thức ngủ riêng, `Scope` (`join`,
 `parallel_for`, `par_reduce`), `JobGraph`, `PerWorker`, `Bump`, kênh oneshot, registry
 [`Lanes`](../src/lanes.rs), `profile::Sink` và bộ đếm. `Priority` giờ có cả ba nền tảng.
@@ -165,7 +165,7 @@ Không có mốc này thì không có gì khác chạy được.
 | bước | việc |
 |---|---|
 | M1.1 | **Xong.** Xóa `src/thread_pool.rs`, đổi `custom_type::Job` sang `InlineFn`, thêm test job chạy qua ring và bị thả cùng ring |
-| M1.2 | **Xong.** [`src/lane_queue.rs`](../src/lane_queue.rs): độ dài đọc được không cần khoá, `steal_batch_and_pop` nạp thẳng vào ring bằng một lần publish, trait `LocalQueue` để dùng chung cho cả hai loại ring. Bản linked list block lock-free để sau, xem [mục 8](#8-ba-quyết-định-đã-chốt) |
+| M1.2 | **Xong.** [`src/utils/queue_batching/`](../src/utils/queue_batching/): độ dài đọc được không cần khoá, `steal_batch_and_pop` nạp thẳng vào ring bằng một lần publish, trait `LocalQueue` để dùng chung cho cả hai loại ring. Bản linked list block lock-free để sau, xem [mục 8](#8-ba-quyết-định-đã-chốt) |
 | M1.3 | **Xong.** `spill_half` được `Shared::push_local` gọi khi ring đầy, và `ring_buffer_lifo` giờ có bản của riêng nó ([`ring_buffer_lifo/owner.rs`](../src/ring_buffer_lifo/owner.rs)): chủ bốc được cả lô ở phía `top`, khác kẻ trộm, vì `bottom` không đổi dưới lưng nó |
 | M1.4 | **Xong.** [`src/pool/sleep.rs`](../src/pool/sleep.rs). Một ô atomic gói **ba** con số chứ không phải hai, xem ghi chú bên dưới. Trần searcher ở 50% worker, sàn là một |
 | M1.5 | **Xong.** Worker loop trong [`src/pool/mod.rs`](../src/pool/mod.rs): `lifo_slot -> ring -> lane_queue -> steal -> lane_queue -> park`, kèm `tick % 61` ép ngó lane queue |

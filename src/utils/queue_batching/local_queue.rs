@@ -1,9 +1,9 @@
-/// Ring local nhìn từ phía [`LaneQueue`].
+/// Ring riêng của một worker, nhìn từ phía [`QueueBatching`](super::QueueBatching).
 ///
 /// Hai ring của crate ([`ring_buffer_fifo`](crate::ring_buffer_fifo) và
 /// [`ring_buffer_lifo`](crate::ring_buffer_lifo)) có cùng bốn hàm này với cùng ý nghĩa, nên
-/// `LaneQueue` không cần biết mình đang nạp vào loại nào. Pool chọn loại ring, `LaneQueue` chỉ đổ
-/// job vào.
+/// [`steal_batch_and_pop`](super::QueueBatching::steal_batch_and_pop) không cần biết mình đang nạp
+/// vào loại nào. Pool chọn loại ring, hàng đợi chỉ đổ job vào.
 pub trait LocalQueue<T>
 {
     /// Tổng số ô, cố định từ lúc khởi tạo.
@@ -12,7 +12,8 @@ pub trait LocalQueue<T>
     /// được push, nên con số này an toàn để chia cụm dựa trên nó.
     fn remaining(&self) -> usize;
     fn push(&mut self, val: T) -> Result<(), T>;
-    /// Ghi cả cụm rồi publish **một lần**. Đây là lý do `LaneQueue` không cần `Vec` trung gian.
+    /// Ghi cả cụm rồi publish **một lần**. Đây là lý do đường nạp vào ring không cần `Vec` trung
+    /// gian.
     fn push_iter<I: IntoIterator<Item = T>>(&mut self, vals: I) -> usize;
 }
 

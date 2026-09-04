@@ -1,6 +1,6 @@
 use crate::channel::inner::Inner;
 use crate::sync::{Arc, Ordering};
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 
 /// Đầu gửi. Gửi được đúng một lần, vì [`Self::send`] nuốt luôn chính nó.
 pub struct Sender<T>

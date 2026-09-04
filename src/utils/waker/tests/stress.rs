@@ -5,8 +5,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::sync::{AtomicUsize, Ordering};
+use crate::utils::available_cores;
 use crate::utils::cache_padded::CachePadded;
-use crate::utils::cores::available_cores;
 use crate::utils::waker::Waker;
 
 /// Miri interprets every instruction, so the iteration counts that take a couple of seconds on

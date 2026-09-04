@@ -1,7 +1,7 @@
 use crate::custom_type::Job;
 use crate::pool::Shared;
 use crate::sync::{Arc, AtomicUsize, Mutex, Ordering};
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 
 /// Một nút của đồ thị: phần việc, thứ nó còn đang chờ, và thứ đang chờ nó.
 pub struct Node

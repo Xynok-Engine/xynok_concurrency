@@ -23,15 +23,34 @@ pub mod backoff;
 pub mod backoff_manual;
 pub mod bits;
 pub mod cache_padded;
-pub mod cores;
 pub mod cursors;
+pub mod fixed_ring_buffer;
 pub mod fixed_buffer;
 pub mod inline_fn;
 pub mod lock_free;
 pub mod packed;
-pub mod poison;
 pub mod queue_batching;
 pub mod slots;
 pub mod spinlock;
 pub mod steal;
 pub mod waker;
+pub mod random;
+/// Lấy dữ liệu trong khoá std kể cả khi khoá đã bị nhiễm độc vì có thread panic lúc đang giữ nó.
+///
+/// Ở đây mọi chỗ dùng khoá đều tự giữ dữ liệu ở trạng thái hợp lệ trước khi nhả, nên một cú panic
+/// của thread khác không có lý do gì để làm hỏng phần còn lại của pool.
+#[inline]
+pub fn ignore_poison<G>(result: std::sync::LockResult<G>) -> G
+{
+    result.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Số luồng phần cứng mà máy đang cho phép chạy song song.
+///
+/// Hỏi được thì trả về con số thật, hỏi không được thì trả về 1 để nơi gọi cứ thế chạy tiếp thay
+/// vì phải xử lỗi.
+#[inline]
+pub fn available_cores() -> usize
+{
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}

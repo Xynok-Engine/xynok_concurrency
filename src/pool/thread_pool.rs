@@ -2,7 +2,6 @@
 
 use crate::bump::Bump;
 use crate::custom_type::Job;
-use crate::lane_queue::LaneQueue;
 use crate::per_worker::PerWorker;
 use crate::ring_buffer_fifo::RingBufferFifo;
 use crate::scope::Scope;
@@ -11,6 +10,7 @@ use crate::scope::scope_in::scope_in;
 use crate::sync::cell::UnsafeCell;
 use crate::sync::{Arc, AtomicBool, Mutex, thread};
 use crate::utils::cache_padded::CachePadded;
+use crate::utils::queue_batching::QueueBatching;
 
 use super::config::Config;
 use super::context::{CONTEXT, Context, next_pool_id, worker_index_in};
@@ -59,7 +59,7 @@ impl ThreadPool
         let ring_capacity = config.ring_capacity.max(2).min(u32::MAX as usize) as u32;
 
         let shared = Arc::new(Shared {
-            lane_queue:  LaneQueue::new(),
+            lane_queue:  QueueBatching::new(),
             locals:      (0..participants)
                 .map(|_| {
                     CachePadded::new(Local {

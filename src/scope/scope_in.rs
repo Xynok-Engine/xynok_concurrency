@@ -5,7 +5,7 @@ use crate::latch::Latch;
 use crate::pool::Shared;
 use crate::scope::scope::Scope;
 use crate::sync::{Arc, Mutex};
-use crate::utils::poison::ignore_poison;
+use crate::utils::ignore_poison;
 
 /// Thân của [`ThreadPool::scope`], gọi được từ bất cứ chỗ nào đang cầm phần dùng chung của pool.
 pub(crate) fn scope_in<'scope, R>(shared: &Arc<Shared>, f: impl FnOnce(&Scope<'scope>) -> R) -> R

@@ -6,7 +6,7 @@ use crate::apis::priority::level::Level;
 /// > [!IMPORTANT]
 /// > Mọi API bên dưới đều chỉ đặt được cho **thread đang gọi**, nên phải gọi từ chính worker chứ
 /// > không phải từ thread đã spawn nó ra.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, Default, PartialEq, Eq)]
 pub enum Priority
 {
     #[rustfmt::skip]#[default] Frame,
