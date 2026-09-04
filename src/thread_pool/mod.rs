@@ -3,7 +3,8 @@ use xynok_std::unsafe_ptr::HeapPtr;
 use crate::apis::priority::Priority;
 use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::custom_type::Job;
-use crate::sync::{AtomicBool, AtomicUsize, Ordering, thread};
+use crate::sync::{thread, AtomicBool, AtomicUsize, Ordering};
+use crate::thread_pool::local::{next_pool_id, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::worker::{Worker, WorkerHandle};
 use crate::utils::available_cores;
@@ -12,6 +13,7 @@ use crate::utils::fixed_buffer::FixedBuffer;
 use crate::utils::queue_batching::QueueBatching;
 pub(crate) mod worker;
 pub(crate) mod params;
+pub(crate) mod local;
 
 pub struct CfgThreadPool
 {
@@ -32,6 +34,10 @@ pub struct ThreadPool
 
 pub(crate) struct ThreadPoolInner
 {
+    /// Số hiệu riêng của pool này, để [`Context`] của thread nói được nó là worker của *pool nào*.
+    ///
+    /// [`Context`]: crate::thread_pool::local::Context
+    pub id:             u64,
     pub tasks:          QueueBatching<Job>,
     pub workers:        FixedBuffer<WorkerHandle>,
     /// Cổng khởi tạo. Worker sinh ra trước khi `new` kịp ghi xong `workers`, nên nó phải đợi ở đây
@@ -88,6 +94,7 @@ impl ThreadPool
         );
 
         let inner = HeapPtr::new(ThreadPoolInner {
+            id:             next_pool_id(),
             tasks:          QueueBatching::with_capacity(cfg.task_capacity),
             workers:        FixedBuffer::<WorkerHandle>::new(total_worker),
             init_completed: CachePadded::new(AtomicBool::new(false)),
@@ -139,10 +146,59 @@ impl ThreadPool
             inner:   inner,
         }
     }
-    pub fn push(&mut self, task: Job)
+    /// Giao một việc cho cả pool.
+    ///
+    /// Việc luôn rơi vào hàng đợi chung, ai rảnh trước thì nhặt. Gọi từ đâu cũng được, kể cả từ
+    /// bên trong một job đang chạy.
+    ///
+    /// Task con sinh ra giữa lúc chạy job thì đừng đi đường này, dùng [`ThreadPool::spawn_local`]
+    /// để nó ở lại đúng worker vừa sinh ra nó.
+    pub fn push(&self, task: Job)
     {
         self.inner.tasks.push(task);
+
+        // Vừa có việc mới. Người đang ngủ không tự biết được, không gõ cửa thì họ phải nằm hết
+        // `SLEEP_SLICE` mới dậy.
         self.inner.wake_one();
+    }
+
+    /// Đẩy một việc vào deque riêng của chính worker đang gọi.
+    ///
+    /// Đây là đường dành cho task con sinh ra từ bên trong một job. Worker sẽ quay lại lấy nó ngay
+    /// sau job hiện tại, dữ liệu còn nóng trong cache, và thứ tự LIFO giữ đúng nhánh đệ quy vừa mở
+    /// ra. Ai rảnh vẫn trộm được từ đầu kia của deque, nên việc không bị giam ở một người.
+    ///
+    /// Trả `Err` kèm nguyên task khi không đẩy được, có hai trường hợp:
+    ///
+    /// 1. Thread đang gọi không phải worker của pool này. Deque chỉ đúng chủ của nó được đẩy vào,
+    ///    nên người ngoài phải đi đường [`ThreadPool::push`].
+    /// 2. Deque đã đầy. Ở đây không được quay tại chỗ đợi có ô trống, vì người duy nhất lấy việc
+    ///    ra khỏi deque này là chính thread đang gọi, mà nó thì đang kẹt trong lời gọi này. Pool
+    ///    một worker sẽ treo vĩnh viễn.
+    ///
+    /// Nhận `Err` thì giữ phần dư lại chỗ mình rồi thử lại sau, khi worker đã chạy bớt và có ô
+    /// trống. Đừng lặng lẽ tuồn task con sang hàng đợi chung: hàng đợi đó là FIFO cấp scheduler,
+    /// chen task con vào giữa là phá thứ tự nhánh đệ quy và mất luôn tính cục bộ của cache.
+    pub fn spawn_local(&self, task: Job) -> Result<(), Job>
+    {
+        let local_ctx = THREAD_LOCAL_CTX.get();
+
+        // Số hiệu pool phải khớp mới được đi đường này. Một thread đang là worker của pool khác
+        // cũng mang theo một `index`, và con số đó rất dễ hợp lệ ở đây: `workers` không kiểm biên,
+        // còn deque thì chỉ đúng một thread được quyền đẩy vào.
+        if local_ctx.pool != self.inner.id
+        {
+            return Err(task);
+        }
+
+        // An toàn: context mang đúng số hiệu của pool này, nên `index` là chỗ do chính pool này
+        // phát cho thread đang gọi, và thread đó là chủ của deque nằm ở đó.
+        let handle = unsafe { self.inner.workers.get_at(local_ctx.index) };
+        handle.worker.tasks.push(task)?;
+
+        // Việc nằm trong deque riêng nhưng người khác vẫn trộm được, nên vẫn phải gõ cửa.
+        self.inner.wake_one();
+        Ok(())
     }
 
     pub fn scope(&mut self) {}
@@ -185,7 +241,7 @@ fn shutdown(inner: &ThreadPoolInner, handles: &mut Vec<thread::JoinHandle<()>>, 
 
     for i in 0..worker_count
     {
-        drop(unsafe { inner.workers.take_at(i) });
+        unsafe { inner.workers.drop_at(i) };
     }
 }
 

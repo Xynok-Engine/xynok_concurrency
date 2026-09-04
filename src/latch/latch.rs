@@ -1,7 +1,7 @@
 use crate::latch::latch_ticket::LatchTicket;
 use crate::pool::ThreadPool;
 use crate::sync::thread::{self, Thread};
-use crate::sync::{AtomicUsize, Ordering};
+use crate::sync::{AtomicBool, AtomicUsize, Ordering};
 use crate::utils::cache_padded::CachePadded;
 
 /// Một bộ đếm ngược, gọi dậy đúng một người khi về 0.
@@ -15,6 +15,10 @@ pub struct Latch
     /// dùng tới ở đường [`Self::wait`]: thread không thuộc pool nào thì không có việc để chạy giúp,
     /// ngủ hẳn còn hơn quay tại chỗ đốt một core.
     waiter:               Thread,
+    /// "Nhóm việc này thôi, đừng làm nữa." Job chưa chạy đọc thấy cờ này thì bỏ qua phần thân.
+    ///
+    /// Cờ chỉ nói về *phần thân* của job, nó không đụng gì tới bộ đếm. Xem [`Self::cancel`].
+    cancelled:            CachePadded<AtomicBool>,
 }
 
 unsafe impl Send for Latch {}
@@ -30,6 +34,7 @@ impl Latch
         Self {
             remaining: CachePadded::new(AtomicUsize::new(count)),
             waiter:    thread::current(),
+            cancelled: CachePadded::new(AtomicBool::new(false)),
         }
     }
 
@@ -46,6 +51,38 @@ impl Latch
             latch:  self as *const Latch,
             waiter: self.waiter.clone(),
         }
+    }
+
+    /// Báo cho cả nhóm rằng phần việc này không cần làm nữa.
+    ///
+    /// Job nào chưa chạy mà đọc thấy cờ (qua [`LatchTicket::is_cancelled`]) thì bỏ qua phần thân
+    /// của mình. Job đang chạy dở không bị cắt ngang, ở đây không có ai đi giết thread cả, muốn
+    /// dừng sớm thì chính thân job phải tự ngó cờ ở những chỗ ngắt được.
+    ///
+    /// Trả `true` nếu chính lần gọi này là lần bật cờ. Dùng cho kiểu "người đầu tiên thắng": ai
+    /// nhận `true` thì được quyền ghi lý do huỷ vào chỗ dùng chung, khỏi phải thêm một cái khoá
+    /// nữa chỉ để tranh xem lỗi nào được giữ lại.
+    ///
+    /// # Huỷ không rút ngắn lệnh chờ
+    ///
+    /// [`Self::wait`] và [`Self::wait_in`] vẫn nằm đó tới khi bộ đếm về 0, huỷ hay không cũng vậy.
+    /// Đây không phải chỗ để tối ưu thêm: bảng đếm nằm trên ngăn xếp của người chờ, vé thì cầm con
+    /// trỏ thô tới nó, nên người chờ mà bỏ đi sớm là để lại một đống vé trỏ vào khung ngăn xếp đã
+    /// bị thu hồi. Cái huỷ mua được là các job còn xếp hàng trả vé gần như tức thì thay vì chạy
+    /// hết phần việc của chúng.
+    #[inline]
+    pub fn cancel(&self) -> bool
+    {
+        // `AcqRel` chứ không phải `Relaxed`: người bật cờ thường vừa ghi xong lý do huỷ ở đâu đó,
+        // và job đọc thấy cờ phải nhìn thấy luôn cả những gì ghi trước đó.
+        !self.cancelled.swap(true, Ordering::AcqRel)
+    }
+
+    /// Nhóm việc này đã bị huỷ chưa.
+    #[inline]
+    pub fn is_cancelled(&self) -> bool
+    {
+        self.cancelled.load(Ordering::Acquire)
     }
 
     /// Số job còn chưa báo về. Ảnh chụp, dùng cho counter và log.

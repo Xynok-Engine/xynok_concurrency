@@ -5,11 +5,12 @@ use xynok_std::unsafe_ptr::{HeapMut, HeapPtr};
 use crate::collection::ring_buffer::spmc_lifo_produce_fifo_consume::SpmcRingBufferLifoProduceFifoConsume;
 use crate::custom_type::Job;
 use crate::ring_buffer_fifo::Steal;
-use crate::sync::thread::{Thread, park_timeout};
+use crate::sync::thread::{park_timeout, Thread};
 use crate::sync::{AtomicBool, Ordering};
-use crate::thread_pool::ThreadPoolInner;
+use crate::thread_pool::local::{Context, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::worker::WorkerState::Stealing;
+use crate::thread_pool::ThreadPoolInner;
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::random::Random;
@@ -22,7 +23,7 @@ const SLEEP_SLICE: Duration = Duration::from_millis(100);
 
 pub struct Worker
 {
-    tasks:       SpmcRingBufferLifoProduceFifoConsume<Job>,
+    pub tasks:   SpmcRingBufferLifoProduceFifoConsume<Job>,
     idx:         usize,
     root:        HeapMut<ThreadPoolInner>,
     state:       WorkerState,
@@ -98,6 +99,13 @@ impl Worker
         }
         backoff.reset();
 
+        // Ghi chỗ đứng sau khi qua cổng, không phải trước. Job chỉ chạy được từ đây trở đi, nên
+        // trước cổng chưa ai cần tới nó, mà đường thoát sớm ở trên thì lại không phải dọn.
+        THREAD_LOCAL_CTX.set(Context {
+            pool:  params.root.id,
+            index: params.worker.idx,
+        });
+
         let mut update_data = UpdateData::new(&params);
         while params.root.is_running.load(Ordering::Acquire)
         {
@@ -113,6 +121,8 @@ impl Worker
             match next_state
             {
                 WorkerState::Idle => backoff.reset(),
+
+                // If we steal too many times, we should sleep.
                 WorkerState::Stealing(_) => match backoff.is_completed()
                 {
                     true =>
@@ -190,8 +200,8 @@ fn steal_from(params: ParamsWorker, update_data: &mut UpdateData, steal_idx: usi
 {
     let worker = params.worker;
 
-    // Tự trộm của chính mình thì nguồn và đích là cùng một ring, cursor sẽ loạn. Quay về vét hàng
-    // đợi chung rồi bốc nạn nhân khác.
+    // If the source and destination are the same ring, the cursor state will become corrupted.
+    // Revert to polling the shared queue and pick up a different task.
     if steal_idx == worker.idx
     {
         return Stealing(None);

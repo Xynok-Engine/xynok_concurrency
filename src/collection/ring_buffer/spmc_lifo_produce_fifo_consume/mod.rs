@@ -28,8 +28,9 @@
 //! trong một lần giành thì lùi lại theo nhịp tăng dần rồi thử lại.
 //!
 //! > [!IMPORTANT]
-//! > Đúng một thread được làm chủ. Đường đẩy vào và đường chủ lấy ra đều tự kiểm tra người gọi có
-//! > phải chủ hay không, và báo lỗi ngay nếu không phải.
+//! > Đúng một thread được làm chủ, và ring không tự kiểm chuyện đó. Gọi `push`, `pop_lifo` hay
+//! > `push_batch_by_taking_from` từ một thread không phải chủ là hỏng con trỏ, im lặng, không có
+//! > lỗi nào báo ra. Người dùng ring phải tự bảo đảm điều này ở tầng trên.
 
 pub mod consumer;
 pub mod spmc_ring_buffer_lifo_produce_fifo_consume;

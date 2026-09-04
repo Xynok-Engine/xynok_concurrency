@@ -16,6 +16,14 @@
 //! - **Thread ngoài pool** thì ngủ hẳn, vì nó không có việc gì để chạy giúp, quay tại chỗ chỉ đốt
 //!   một core vô ích.
 //!
+//! ### Huỷ nửa chừng
+//!
+//! Có [`Latch::cancel`] để nói "nhóm việc này thôi, đừng làm nữa". Nó chỉ bật một cái cờ, job nào
+//! chưa chạy thì đọc thấy và bỏ qua phần thân của mình, còn job đang chạy dở thì không bị cắt
+//! ngang, muốn dừng sớm thì chính thân job phải ngó cờ ở những chỗ ngắt được.
+//!
+//! Huỷ **không** rút ngắn lệnh chờ, và đó là chuyện cố ý, xem phần ghi chú ở cuối trang này.
+//!
 //! ### Vì sao vé lại đi được vào trong một job
 //!
 //! Cơ chế đợi bên [`utils`](crate::utils::waker) cũng đếm ngược như vậy, nhưng vé của nó mượn

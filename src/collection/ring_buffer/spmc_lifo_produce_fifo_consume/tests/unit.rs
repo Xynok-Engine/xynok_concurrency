@@ -25,20 +25,6 @@ fn cursors<T>(ring: &Ring<T>) -> (u32, u32, u32)
     (c.stolen, c.blocked, c.tail)
 }
 
-/// Chạy `f` trên một thread khác rồi trả về thông điệp panic, hoặc `None` nếu chạy trót lọt.
-///
-/// Phải `join` thủ công thay vì để `thread::scope` tự dọn, nếu không scope sẽ ném lại panic của
-/// mình ("a scoped thread panicked") và nuốt mất thông điệp gốc mà test cần soi.
-fn panic_tu_thread_khac<F: FnOnce() + Send>(f: F) -> Option<String>
-{
-    let ket_qua = std::thread::scope(|scope| scope.spawn(f).join());
-    ket_qua.err().map(|e| match e.downcast_ref::<&str>()
-    {
-        Some(s) => (*s).to_string(),
-        None => e.downcast_ref::<String>().cloned().unwrap_or_default(),
-    })
-}
-
 /// Dựng sẵn một `SpmcRingBufferFifo` đã nạp `0..n` để làm nguồn cho `push_batch_by_taking_from`.
 fn fifo_source(capacity: usize, n: u32) -> SpmcRingBufferFifo<u32>
 {
@@ -120,20 +106,6 @@ fn t6_push_khi_day_thi_tra_lai_gia_tri_chu_khong_nuot()
     assert_eq!(cursors(&ring), (0, 0, 2), "lần push hỏng không được đụng vào tail");
 }
 
-#[test]
-fn t7_push_tu_thread_khac_thi_panic()
-{
-    let ring = Ring::<u32>::new(4);
-    let thong_diep = panic_tu_thread_khac(|| {
-        let _ = ring.push(1);
-    });
-    assert!(
-        thong_diep.as_deref().is_some_and(|m| m.contains("owner thread")),
-        "push từ thread lạ phải panic vì sai chủ sở hữu, nhận được: {:?}",
-        thong_diep
-    );
-}
-
 // --- pop_lifo: chủ sở hữu lấy phần tử mới nhất trước ---
 
 #[test]
@@ -142,21 +114,6 @@ fn t8_ring_rong_thi_pop_lifo_tra_ve_none()
     let ring = Ring::<u32>::new(4);
     assert!(ring.pop_lifo().is_none());
     assert_eq!(cursors(&ring), (0, 0, 0), "pop hụt không được đụng vào con trỏ");
-}
-
-#[test]
-fn t9_pop_lifo_tu_thread_khac_thi_panic()
-{
-    let ring = Ring::<u32>::new(4);
-    assert_eq!(ring.push(1), Ok(()));
-    let thong_diep = panic_tu_thread_khac(|| {
-        let _ = ring.pop_lifo();
-    });
-    assert!(
-        thong_diep.as_deref().is_some_and(|m| m.contains("owner thread")),
-        "pop_lifo từ thread lạ phải panic vì sai chủ sở hữu, nhận được: {:?}",
-        thong_diep
-    );
 }
 
 #[test]
@@ -214,21 +171,6 @@ fn t13_push_batch_voi_max_bang_khong_thi_panic()
     let ring = Ring::<u32>::new(4);
     let src = fifo_source(4, 2);
     let _ = ring.push_batch_by_taking_from(0, &src);
-}
-
-#[test]
-fn t14_push_batch_tu_thread_khac_thi_panic()
-{
-    let ring = Ring::<u32>::new(4);
-    let src = fifo_source(4, 2);
-    let thong_diep = panic_tu_thread_khac(|| {
-        let _ = ring.push_batch_by_taking_from(2, &src);
-    });
-    assert!(
-        thong_diep.as_deref().is_some_and(|m| m.contains("owner thread")),
-        "push_batch từ thread lạ phải panic vì sai chủ sở hữu, nhận được: {:?}",
-        thong_diep
-    );
 }
 
 #[test]

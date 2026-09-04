@@ -45,6 +45,11 @@ impl<T> FixedBuffer<T>
             (*p).write(val);
         });
     }
+    #[inline]
+    pub unsafe fn get_at(&self, cursor: usize) -> &T
+    {
+        self.at(cursor).with(|p| unsafe { (*p).assume_init_ref() })
+    }
 
     #[inline]
     pub unsafe fn take_at(&self, cursor: usize) -> T

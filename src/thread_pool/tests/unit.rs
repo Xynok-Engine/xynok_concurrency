@@ -37,7 +37,7 @@ fn t0_pool_chay_het_task_da_day_vao()
     const TOTAL_TASK: usize = 2_000;
 
     let done = Arc::new(AtomicUsize::new(0));
-    let mut pool = ThreadPool::new(cfg("t0", 4));
+    let pool = ThreadPool::new(cfg("t0", 4));
 
     for _ in 0..TOTAL_TASK
     {
@@ -57,7 +57,7 @@ fn t1_drop_pool_khong_treo()
     let done = Arc::new(AtomicUsize::new(0));
 
     {
-        let mut pool = ThreadPool::new(cfg("t1", 4));
+        let pool = ThreadPool::new(cfg("t1", 4));
         for _ in 0..500
         {
             let done = done.clone();
@@ -90,7 +90,7 @@ fn t3_pool_mot_worker_van_chay_duoc()
     const TOTAL_TASK: usize = 500;
 
     let done = Arc::new(AtomicUsize::new(0));
-    let mut pool = ThreadPool::new(cfg("t3", 1));
+    let pool = ThreadPool::new(cfg("t3", 1));
 
     for _ in 0..TOTAL_TASK
     {
@@ -115,7 +115,7 @@ fn t4_drop_giua_luc_worker_dang_tron_viec()
     let done = Arc::new(AtomicUsize::new(0));
     for round in 0..ROUND
     {
-        let mut pool = ThreadPool::new(cfg("t4", 4));
+        let pool = ThreadPool::new(cfg("t4", 4));
         for _ in 0..TASK_PER_ROUND
         {
             let done = done.clone();
@@ -142,7 +142,7 @@ fn t5_pool_ranh_thi_di_ngu_va_goi_day_duoc()
     const ROUND: usize = 20;
 
     let done = Arc::new(AtomicUsize::new(0));
-    let mut pool = ThreadPool::new(cfg("t5", 4));
+    let pool = ThreadPool::new(cfg("t5", 4));
 
     // Không có việc thì backoff phải cạn và worker phải nằm xuống, chứ không quay vòng đốt core.
     wait_until("worker đi ngủ", || pool.inner.sleeping.load(Ordering::SeqCst) > 0);
@@ -179,7 +179,7 @@ fn t6_capacity_le_duoc_lam_tron_len_power_of_two()
     cfg.per_worker_task_capacity = 100;
 
     let done = Arc::new(AtomicUsize::new(0));
-    let mut pool = ThreadPool::new(cfg);
+    let pool = ThreadPool::new(cfg);
 
     for _ in 0..TOTAL_TASK
     {
@@ -190,4 +190,150 @@ fn t6_capacity_le_duoc_lam_tron_len_power_of_two()
     }
 
     wait_until("chạy hết task với capacity lẻ", || done.load(Ordering::Relaxed) == TOTAL_TASK);
+}
+
+/// Cho phép mang một tham chiếu tới pool vào trong [`Job`], vốn đòi `'static`.
+///
+/// Chỉ dùng trong file này, và mọi test dùng nó đều đợi job chạy xong trước khi thả pool.
+#[derive(Clone, Copy)]
+struct PoolRef(*const ThreadPool);
+unsafe impl Send for PoolRef {}
+impl PoolRef
+{
+    fn get(&self) -> &ThreadPool
+    {
+        unsafe { &*self.0 }
+    }
+}
+
+#[test]
+fn t7_spawn_local_day_thi_tra_task_ve_cho_nguoi_goi()
+{
+    const TOTAL_CHILD: usize = 500;
+
+    // Deque riêng chỉ có 2 ô, mà job cha đẻ ra 500 job con, tất cả đều nhắm vào deque của chính
+    // worker đang chạy. Pool một người nên không ai trộm hộ. Hết chỗ thì `spawn_local` phải trả
+    // nguyên task về ngay, chứ không được quay tại chỗ đợi có ô trống: người duy nhất lấy việc ra
+    // khỏi deque đó đang kẹt ngay trong lúc đẩy vào, đợi là treo vĩnh viễn.
+    let mut cfg = cfg("t7", 1);
+    cfg.per_worker_task_capacity = 2;
+
+    let done = Arc::new(AtomicUsize::new(0));
+    let rejected = Arc::new(AtomicUsize::new(0));
+    let pool = ThreadPool::new(cfg);
+    let pool_ref = PoolRef(&pool as *const ThreadPool);
+
+    let counter = done.clone();
+    let rejected_counter = rejected.clone();
+    pool.push(Job::new(move || {
+        for _ in 0..TOTAL_CHILD
+        {
+            let counter = counter.clone();
+            let child = Job::new(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            });
+
+            // Phần dư là chuyện của người gọi. Ở đây job cha chọn cách đơn giản nhất là chạy luôn
+            // tại chỗ, chứ không tuồn sang hàng đợi chung.
+            if let Err(task) = pool_ref.get().spawn_local(child)
+            {
+                rejected_counter.fetch_add(1, Ordering::Relaxed);
+                task.run_once();
+            }
+        }
+    }));
+
+    wait_until("chạy hết job con", || done.load(Ordering::Relaxed) == TOTAL_CHILD);
+    assert!(
+        rejected.load(Ordering::Relaxed) > 0,
+        "deque chỉ có 2 ô mà 500 job con vào lọt hết, `spawn_local` đang không báo đầy"
+    );
+}
+
+#[test]
+fn t8_spawn_local_cheo_pool_bi_tu_choi()
+{
+    const TOTAL_TASK: usize = 400;
+
+    // `b` khai báo trước để nó bị thả sau: worker của `a` còn cầm con trỏ tới nó.
+    let pool_b = ThreadPool::new(cfg("t8b", 1));
+
+    // `a` đông người hơn `b`. Nếu chỗ đứng thread local chỉ nhớ mỗi chỉ số thì worker số 3 của `a`
+    // sẽ với vào ô số 3 trong dãy worker của `b`, mà dãy đó chỉ có một ô: vừa đọc ra ngoài vùng,
+    // vừa đẩy vào deque của người khác từ một thread không phải chủ nó. Nhớ thêm số hiệu pool thì
+    // lần này trượt, task được trả về nguyên vẹn và người gọi tự đưa nó vào hàng đợi chung của `b`.
+    let pool_a = ThreadPool::new(cfg("t8a", 4));
+
+    let done = Arc::new(AtomicUsize::new(0));
+    let rejected = Arc::new(AtomicUsize::new(0));
+    let b_ref = PoolRef(&pool_b as *const ThreadPool);
+
+    for _ in 0..TOTAL_TASK
+    {
+        let counter = done.clone();
+        let rejected_counter = rejected.clone();
+        pool_a.push(Job::new(move || {
+            let child = Job::new(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            });
+
+            match b_ref.get().spawn_local(child)
+            {
+                Ok(()) =>
+                {}
+                Err(task) =>
+                {
+                    rejected_counter.fetch_add(1, Ordering::Relaxed);
+                    b_ref.get().push(task);
+                }
+            }
+        }));
+    }
+
+    wait_until("pool b chạy hết việc do pool a giao", || done.load(Ordering::Relaxed) == TOTAL_TASK);
+    assert_eq!(
+        rejected.load(Ordering::Relaxed),
+        TOTAL_TASK,
+        "worker của pool a đẩy lọt việc vào deque riêng của pool b"
+    );
+}
+
+#[test]
+fn t9_spawn_local_o_lai_dung_worker_da_sinh_ra_no()
+{
+    const TOTAL_CHILD: usize = 100;
+
+    // Một worker duy nhất, deque rộng rãi. Job con đẩy bằng `spawn_local` phải vào lọt hết, và
+    // chạy trên đúng thread đã sinh ra chúng.
+    let done = Arc::new(AtomicUsize::new(0));
+    let same_thread = Arc::new(AtomicUsize::new(0));
+    let pool = ThreadPool::new(cfg("t9", 1));
+    let pool_ref = PoolRef(&pool as *const ThreadPool);
+
+    let counter = done.clone();
+    let same_thread_counter = same_thread.clone();
+    pool.push(Job::new(move || {
+        let parent = std::thread::current().id();
+        for _ in 0..TOTAL_CHILD
+        {
+            let counter = counter.clone();
+            let same_thread_counter = same_thread_counter.clone();
+            let child = Job::new(move || {
+                if std::thread::current().id() == parent
+                {
+                    same_thread_counter.fetch_add(1, Ordering::Relaxed);
+                }
+                counter.fetch_add(1, Ordering::Relaxed);
+            });
+
+            assert!(pool_ref.get().spawn_local(child).is_ok(), "deque còn chỗ mà `spawn_local` lại từ chối");
+        }
+    }));
+
+    wait_until("chạy hết job con", || done.load(Ordering::Relaxed) == TOTAL_CHILD);
+    assert_eq!(
+        same_thread.load(Ordering::Relaxed),
+        TOTAL_CHILD,
+        "job con chạy ở thread khác thread đã sinh ra nó"
+    );
 }
