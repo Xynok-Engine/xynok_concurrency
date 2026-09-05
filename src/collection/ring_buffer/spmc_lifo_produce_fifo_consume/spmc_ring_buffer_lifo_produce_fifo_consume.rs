@@ -267,7 +267,6 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
         Steal::Success(val)
     }
 
-    /// Bản gọn của [`Self::try_steal_batch_to`] cho chỗ nào chỉ cần biết lấy được bao nhiêu.
     #[inline]
     pub(crate) fn consumer_pop_batch_to(&self, max: usize, other: &SpmcRingBufferLifoProduceFifoConsume<T>) -> usize
     {
@@ -276,12 +275,6 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
 }
 impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
 {
-    /// Giành trước một lô ở đầu `in_stealing`, thử đúng một lần.
-    ///
-    /// Không có vòng xoay ở đây: CAS thua nghĩa là vừa có người đụng vào `anchor`, ảnh chụp con trỏ
-    /// trong tay đã cũ. Thay vì thử lại với số liệu cũ, trả [`Steal::Busy`] để người gọi chụp lại từ
-    /// đầu hoặc chuyển sang nạn nhân khác.
-    ///
     /// Note: Since this is an SPMC implementation, we do not increment the stolen count during the
     /// CAS operation. The caller must handle this after successfully popping the value.
     #[cold]
@@ -293,19 +286,12 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
         {
             return Steal::Empty;
         }
-        // `tail` về cùng nhịp với `in_stealing` nên không thể lệch nhau. Đây đúng là chỗ giữ cho
-        // `pop_amount` không bao giờ ôm nhầm ô của chủ.
         cas_data.pop_amount = cas_data.pop_amount.min(filled_slots);
 
         let current = pack(cas_data.cursor_data.tail, cas_data.cursor_data.blocked);
-        let next = pack(
-            cas_data.cursor_data.tail,
-            // reserve a slot for the pop operation, creating a barrier for other consumers
-            cas_data.cursor_data.blocked.wrapping_add(cas_data.pop_amount as u32),
-        );
+        let next = pack(cas_data.cursor_data.tail, cas_data.cursor_data.blocked.wrapping_add(cas_data.pop_amount as u32));
 
-        // Dùng bản `strong`: chỉ thử một lần nên một cú trượt vu vơ của `weak` sẽ bị hiểu nhầm thành
-        // có người tranh chấp.
+        // I'm using the `strong` version here. Since it only attempts the operation once, a stray failure from `weak` might be mistakenly interpreted as contention.
         match self.anchor.compare_exchange(current, next, cas_data.success_order, cas_data.fail_order)
         {
             Ok(_) => Steal::Success(cas_data.pop_amount),
@@ -313,11 +299,6 @@ impl<T> SpmcRingBufferLifoProduceFifoConsume<T>
         }
     }
 
-    /// Công bố phần vừa lấy xong, theo đúng thứ tự đã giành.
-    ///
-    /// Ai giành trước công bố trước, nên người tới sau phải chờ tới lượt. Nhờ vậy `stolen` không
-    /// bao giờ nhảy qua một lô còn đang dở, và producer nhìn vào `stolen` là biết chắc ô nào đã
-    /// hết người đọc.
     #[cold]
     fn consumer_publish_stolen(&self, start: u32, amount: u32)
     {

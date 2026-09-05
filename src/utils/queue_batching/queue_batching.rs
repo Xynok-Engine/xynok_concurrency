@@ -5,8 +5,6 @@ use crate::sync::{AtomicBool, AtomicUsize, Ordering};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_ring_buffer::FixedRingBuffer;
-use crate::utils::queue_batching::batch_size::batch_size;
-use crate::utils::queue_batching::local_queue::LocalQueue;
 use crate::utils::queue_batching::queue_batching_guard::QueueBatchingGuard;
 
 /// Hàng đợi vào trước ra trước cho nhiều người đẩy và nhiều người rút, sức chứa tự nới.
@@ -179,38 +177,6 @@ impl<T> QueueBatching<T>
             }
         }
         moved
-    }
-
-    /// Đường ra chính của một worker: giữ một phần tử để chạy ngay, đổ phần còn lại thẳng vào hàng
-    /// đợi riêng của nó.
-    ///
-    /// `workers` là số người đang chia nhau hàng đợi này. Không có nó thì người tới trước hốt sạch
-    /// và những người sau vẫn đói, dù nhìn vào tổng thì thừa việc cho tất cả. Cụm lấy về cũng luôn
-    /// chừa lại nửa `dst` trống, cho việc con mà chính người gọi sắp đẻ ra.
-    ///
-    /// Trả `None` khi hàng đợi rỗng. Trả `Some(val)` thì phần tử đó là của người gọi, chạy nó ngay,
-    /// phần đã nạp vào `dst` để lại lấy sau.
-    pub fn steal_batch_and_pop<Q>(&self, dst: &mut Q, workers: usize) -> Option<T>
-    where Q: LocalQueue<T>
-    {
-        if self.is_empty()
-        {
-            return None;
-        }
-
-        let mut elements = self.get();
-        // Rỗng thật (ai đó vừa vét sạch giữa lúc mình đọc `len` và lúc giành được quyền): nhả quyền
-        // và về tay không, đúng như khi đọc `len` thấy 0.
-        let first = elements.pop_front()?;
-
-        let want = batch_size(elements.len(), workers, dst);
-        if want > 0
-        {
-            // `from_fn` giữ cho việc rút ra lười: `push_iter` chỉ gọi `pop_front` đúng số lần nó
-            // thực sự ghi được, nên không có phần tử nào bị rút ra rồi phải nhét ngược lại.
-            dst.push_iter(std::iter::from_fn(|| elements.pop_front()).take(want));
-        }
-        Some(first)
     }
 
     /// Vét sạch hàng đợi, trả về số phần tử vừa bỏ đi.

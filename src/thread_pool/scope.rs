@@ -62,8 +62,6 @@ impl<'scope> Scope<'scope>
             {
                 Ok(()) =>
                 {
-                    // Việc nằm trong deque riêng nhưng người khác vẫn trộm được, nên vẫn phải gõ cửa.
-                    self.root.wake_one();
                     return;
                 }
                 Err(back) =>

@@ -1,18 +1,15 @@
 use std::marker::PhantomData;
 
-use crate::apis::priority::Priority;
 use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::custom_type::Job;
 use crate::sync::cell::UnsafeCell;
-use crate::sync::thread::{park_timeout, ThreadId};
 use crate::sync::{thread, AtomicBool, AtomicUsize, Ordering};
-use crate::thread_pool::local::{next_pool_id, THREAD_LOCAL_CTX, THREAD_LOCAL_SELF_ID};
+use crate::thread_pool::local::{next_pool_id, THREAD_LOCAL_SELF_ID};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::scope::Scope;
 use crate::thread_pool::shared::ThreadPoolInner;
-use crate::thread_pool::worker::{sleep, Worker, WorkerHandle, SLEEP_SLICE};
+use crate::thread_pool::worker::{Worker, WorkerHandle};
 use crate::utils::available_cores;
-use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_buffer::FixedBuffer;
 use crate::utils::latch::Latch;
@@ -138,7 +135,6 @@ impl ThreadPool
 
         handle.worker.tasks.push(task)?;
 
-        self.inner.wake_one();
         Ok(())
     }
 

@@ -50,7 +50,6 @@ enum WorkerState
 }
 struct UpdateData
 {
-    visited:      usize,
     total_worker: usize,
     tick:         u64,
 }
@@ -60,7 +59,6 @@ impl UpdateData
     {
         Self {
             tick:         0,
-            visited:      0,
             total_worker: params.root.workers.len(),
         }
     }
@@ -104,7 +102,6 @@ impl Worker
 
         if self.tasks.push_batch_by_taking_from_queue(STEAL_AMOUNT, &self.root.tasks) > 0
         {
-            self.root.wake_one();
             return self.run_one_from_local();
         }
 
@@ -121,11 +118,7 @@ impl Worker
         let other = other.with_mut(|p| unsafe { p.as_mut_unchecked().assume_init_ref() });
         match other.worker.tasks.try_steal_batch_to(STEAL_AMOUNT, &self.tasks)
         {
-            Steal::Success(_) =>
-            {
-                self.root.wake_one();
-                self.run_one_from_local()
-            }
+            Steal::Success(_) => self.run_one_from_local(),
             // Trượt một nạn nhân thì thôi, người gọi sẽ quay lại ngay sau khi kiểm điều kiện dừng.
             Steal::Empty | Steal::Busy => false,
         }
@@ -250,9 +243,6 @@ fn steal(params: ParamsWorker, update_data: &mut UpdateData, last_stealing: Opti
         {
             if worker.tasks.push_batch_by_taking_from_queue(STEAL_AMOUNT, &params.root.tasks) > 0
             {
-                // Vừa vơ được một lô, hàng đợi chung có thể còn nữa. Gọi thêm một người dậy để
-                // không phải mình mình gánh.
-                params.root.wake_one();
                 return WorkerState::Idle;
             }
 
@@ -281,11 +271,7 @@ fn steal_from(params: ParamsWorker, update_data: &mut UpdateData, steal_idx: usi
     {
         Steal::Empty => WorkerState::Stealing(Some(next_victim_idx(steal_idx, update_data.total_worker))),
         Steal::Busy => WorkerState::Stealing(Some(steal_idx)),
-        Steal::Success(_) =>
-        {
-            params.root.wake_one();
-            WorkerState::Idle
-        }
+        Steal::Success(_) => WorkerState::Idle,
     }
 }
 #[inline]

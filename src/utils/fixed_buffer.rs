@@ -21,6 +21,11 @@ impl<T> FixedBuffer<T>
     }
 
     #[inline]
+    pub fn is_empty(&self) -> bool
+    {
+        self.len() < 1
+    }
+    #[inline]
     pub fn len(&self) -> usize
     {
         self.cells.len()
