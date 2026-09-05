@@ -1,4 +1,3 @@
-//! src: https://doc.rust-lang.org/std/task/struct.RawWakerVTable.html
 use std::mem::ManuallyDrop;
 
 use crate::sync::cell::UnsafeCell;
@@ -9,10 +8,7 @@ use crate::utils::inline_fn::unbound_v_table::UnboundVTable;
 use crate::utils::inline_fn::v_table::VTable;
 use crate::utils::inline_fn::v_table_alias::VTableAlias;
 
-/// Một việc đã được gói lại, kích thước cố định vừa một dòng cache.
-///
-/// Closure đủ nhỏ thì nằm thẳng bên trong, khỏi cấp phát trên heap. Closure to hơn thì tự động lùi
-/// về đường heap, và chỗ gọi không cần phân biệt hai đường đó.
+/// src: https://doc.rust-lang.org/std/task/struct.RawWakerVTable.html
 #[repr(C)]
 pub struct InlineFn
 {
@@ -69,6 +65,7 @@ impl InlineFn
     /// Người gọi phải bảo đảm job này chạy xong **trước khi** bất cứ thứ gì closure mượn bị thả.
     /// `Scope` bảo đảm điều đó bằng cách không trả về cho tới khi mọi job của nó báo xong, kể cả
     /// khi đang unwind vì panic. Không có bảo đảm đó thì đây là một use-after-free đợi sẵn.
+    /// todo: remove this
     #[inline]
     pub unsafe fn new_unbound<F>(f: F) -> Self
     where F: FnOnce() + Send

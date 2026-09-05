@@ -1,6 +1,6 @@
 use crate::latch::latch::Latch;
-use crate::sync::Ordering;
 use crate::sync::thread::Thread;
+use crate::sync::Ordering;
 
 /// Vé báo "một job đã xong", mang được vào trong một job.
 ///
@@ -43,13 +43,10 @@ impl Drop for LatchTicket
         // Safety: latch còn sống chừng nào còn vé, xem phần đầu file.
         let latch = unsafe { &*self.latch };
         let previous = latch.remaining.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "latch bị trừ nhiều hơn số vé đã phát");
+        debug_assert!(previous > 0, "latch was decremented more times than tickets were issued");
 
         if previous == 1
         {
-            // Từ đây trở đi cái latch có thể đã biến mất: người chờ được phép trả về ngay khi nó
-            // thấy số 0 vừa được ghi. `self.waiter` là bản sao của chính vé này nên vẫn sống.
-            // Không được chạm vào `self.latch` sau dòng trên nữa.
             self.waiter.unpark();
         }
     }

@@ -35,6 +35,7 @@ pub mod spinlock;
 pub mod steal;
 pub mod waker;
 pub mod random;
+pub mod latch;
 /// Lấy dữ liệu trong khoá std kể cả khi khoá đã bị nhiễm độc vì có thread panic lúc đang giữ nó.
 ///
 /// Ở đây mọi chỗ dùng khoá đều tự giữ dữ liệu ở trạng thái hợp lệ trước khi nhả, nên một cú panic
