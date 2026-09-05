@@ -1,8 +1,8 @@
 use crate::sync::{Arc, AtomicUsize, Ordering};
-use crate::utils::inline_fn::InlineFn;
 use crate::utils::inline_fn::consts::INLINE_BYTES;
 use crate::utils::inline_fn::fn_buffer::FnBuffer;
 use crate::utils::inline_fn::v_table::VTable;
+use crate::utils::inline_fn::InlineFn;
 use crate::utils::queue_batching::QueueBatching;
 
 fn empty_fn() {}
@@ -134,69 +134,6 @@ fn t5_chay_qua_queue_batching()
 
     assert_eq!(ran, 100, "mọi job đẩy vào đều phải được rút ra và chạy đúng một lần");
     assert_eq!(counter.load(Ordering::Relaxed), (0..100).sum::<usize>());
-}
-
-/// Ring là nơi job thật sự sống trên đường nóng, nên nó phải chạy được nguyên vẹn qua đó, kể
-/// cả khi job đi vòng qua tay một kẻ trộm thay vì qua tay chủ ring.
-#[test]
-fn t6_chay_qua_ring_fifo()
-{
-    use crate::ring_buffer_fifo::RingBufferFifo;
-
-    let counter = Arc::new(AtomicUsize::new(0));
-    let mut ring: RingBufferFifo<InlineFn> = RingBufferFifo::new(128);
-    let (mut owner, thief) = ring.split();
-
-    for i in 0..100
-    {
-        let counter = Arc::clone(&counter);
-        owner
-            .push(InlineFn::new(move || {
-                counter.fetch_add(i, Ordering::Relaxed);
-            }))
-            .expect("ring 128 ô mà 100 job đã đầy thì có gì đó sai");
-    }
-
-    // Nửa đầu do chủ tự lấy, nửa sau bị trộm: hai đường đọc khác nhau vào cùng một ô.
-    let mut ran = 0;
-    for _ in 0..50
-    {
-        owner.pop().expect("chủ không lấy được job đã đẩy vào").run_once();
-        ran += 1;
-    }
-    let mut stolen = Vec::new();
-    thief.steal_batch(&mut stolen, 100);
-    for job in stolen.drain(..)
-    {
-        job.run_once();
-        ran += 1;
-    }
-
-    assert_eq!(ran, 100, "job đi qua ring phải chạy đúng một lần");
-    assert_eq!(counter.load(Ordering::Relaxed), (0..100).sum::<usize>());
-}
-
-/// Pool bị tắt khi ring còn job là chuyện thường. Job chưa chạy vẫn phải được thả sạch, không
-/// thì mọi thứ nó bắt giữ (texture handle, `Arc` tới scene) rò ra ngoài.
-#[test]
-fn t7_ring_drop_keo_theo_job_chua_chay()
-{
-    use crate::ring_buffer_fifo::RingBufferFifo;
-
-    let alive = Arc::new(AtomicUsize::new(0));
-    {
-        let mut ring: RingBufferFifo<InlineFn> = RingBufferFifo::new(64);
-        let (mut owner, _) = ring.split();
-        for _ in 0..50
-        {
-            let alive = Arc::clone(&alive);
-            let _ = owner.push(InlineFn::new(move || {
-                alive.fetch_sub(1, Ordering::Relaxed);
-            }));
-        }
-    }
-
-    assert_eq!(Arc::strong_count(&alive), 1, "ring bị thả mà job trong đó không được thả theo");
 }
 
 #[test]

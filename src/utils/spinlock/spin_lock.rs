@@ -4,10 +4,6 @@ use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::spinlock::spin_guard::SpinGuard;
 
-/// Khoá xoay bọc quanh một giá trị, dành cho đoạn găng chỉ dài vài lệnh.
-///
-/// Thread nào không giành được khoá sẽ chờ tại chỗ chứ không nhờ hệ điều hành cho ngủ, nên không
-/// mất phí chuyển ngữ cảnh. Đổi lại, giữ khoá lâu là đốt CPU của tất cả những người đang chờ.
 pub struct SpinLock<T>
 {
     pub(super) val:    UnsafeCell<T>,
@@ -36,7 +32,6 @@ impl<T> SpinLock<T>
         }
     }
 
-    /// Chờ tới khi mượn được giá trị bên trong.
     #[inline]
     pub fn get(&self) -> SpinGuard<'_, T>
     {
@@ -47,7 +42,6 @@ impl<T> SpinLock<T>
         self.get_contended()
     }
 
-    /// Thử mượn đúng một lần, đang có người giữ thì trả về `None` chứ không chờ.
     #[inline]
     pub fn try_get(&self) -> Option<SpinGuard<'_, T>>
     {
@@ -58,14 +52,12 @@ impl<T> SpinLock<T>
         None
     }
 
-    /// Mượn thẳng giá trị khi đã cầm tham chiếu độc quyền, khỏi cần đụng tới khoá.
     #[inline]
     pub fn get_mut(&mut self) -> &mut T
     {
         self.val.with_mut(|p| unsafe { &mut *p })
     }
 
-    /// Tháo vỏ khoá ra, lấy lại giá trị bên trong.
     #[inline]
     pub fn take(self) -> T
     {

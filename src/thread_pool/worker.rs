@@ -4,16 +4,16 @@ use xynok_std::unsafe_ptr::{HeapMut, HeapPtr};
 
 use crate::collection::ring_buffer::spmc_lifo_produce_fifo_consume::SpmcRingBufferLifoProduceFifoConsume;
 use crate::custom_type::Job;
-use crate::ring_buffer_fifo::Steal;
 use crate::sync::thread::{park_timeout, Thread};
 use crate::sync::{AtomicBool, Ordering};
 use crate::thread_pool::local::{Context, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
+use crate::thread_pool::shared::ThreadPoolInner;
 use crate::thread_pool::worker::WorkerState::Stealing;
-use crate::thread_pool::ThreadPoolInner;
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::random::Random;
+use crate::utils::steal::Steal;
 
 const STEAL_AMOUNT: usize = 64;
 

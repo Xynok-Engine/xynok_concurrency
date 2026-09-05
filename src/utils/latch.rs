@@ -35,6 +35,15 @@ impl Latch
         LatchTicket { latch: self }
     }
 
+    #[cold]
+    pub fn try_cancel(&self) -> bool
+    {
+        match self.canceled.compare_exchange_weak(false, true, Ordering::Release, Ordering::Acquire)
+        {
+            Ok(_) => true,
+            Err(e) => e,
+        }
+    }
     #[inline]
     pub fn cancel(&self)
     {
@@ -48,6 +57,11 @@ impl Latch
     pub fn is_canceled(&self) -> bool
     {
         self.canceled.load(Ordering::Acquire)
+    }
+    #[inline]
+    pub fn remaining(&self) -> usize
+    {
+        self.remaining.load(Ordering::Acquire)
     }
     #[inline]
     pub fn is_completed(&self) -> bool
@@ -79,7 +93,14 @@ impl Latch
         }
     }
 }
-
+impl<'a> LatchTicket<'a>
+{
+    #[inline]
+    pub fn is_canceled(&self) -> bool
+    {
+        self.latch.is_canceled()
+    }
+}
 impl<'a> Drop for LatchTicket<'a>
 {
     fn drop(&mut self)

@@ -44,6 +44,3 @@ macro_rules! impl_local_queue {
         }
     };
 }
-
-impl_local_queue!(crate::ring_buffer_fifo::Producer<'_, T>);
-impl_local_queue!(crate::ring_buffer_lifo::Producer<'_, T>);

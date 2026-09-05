@@ -1,7 +1,8 @@
 use crate::custom_type::Job;
-use crate::latch::Latch;
+
 use crate::sync::cell::UnsafeCell;
 use crate::thread_pool::ThreadPoolInner;
+use crate::utils::latch::Latch;
 use std::any::Any;
 use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -42,25 +43,6 @@ impl<'scope> Scope<'scope>
             let scope = scope;
             f(unsafe { &*scope.0 });
         });
-    }
-
-    #[inline]
-    pub fn cancel(&self) -> bool
-    {
-        self.latch.cancel()
-    }
-
-    #[inline]
-    pub fn is_cancelled(&self) -> bool
-    {
-        self.latch.is_cancelled()
-    }
-
-    /// Số job của scope này còn chưa báo về. Ảnh chụp, dùng cho counter và log.
-    #[inline]
-    pub fn remaining(&self) -> usize
-    {
-        self.latch.remaining()
     }
 
     fn push_job(&self, job: Job)
@@ -110,11 +92,11 @@ impl<'scope> Scope<'scope>
         let scope = ScopePtr(self as *const Scope<'scope>);
 
         unsafe {
-            Job::new_unbound(move || {
+            Job::new(move || {
                 let ticket = ticket;
                 let scope = scope;
 
-                if ticket.is_cancelled()
+                if ticket.is_canceled()
                 {
                     return;
                 }
@@ -127,13 +109,9 @@ impl<'scope> Scope<'scope>
         }
     }
 
-    /// Giữ lại panic đầu tiên và bảo mọi người còn lại nghỉ tay.
     fn record_panic(&self, payload: PanicPayload)
     {
-        // Người thắng lần bật cờ huỷ là người duy nhất được ghi vào ô này. Ai tới sau thì thôi:
-        // giữ cái sau nghĩa là chọn panic theo thứ tự job kết thúc, mà thứ tự đó thì lần chạy nào
-        // cũng khác.
-        if !self.latch.cancel()
+        if !self.latch.try_cancel()
         {
             return;
         }

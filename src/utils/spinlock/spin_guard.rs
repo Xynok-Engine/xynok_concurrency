@@ -1,10 +1,6 @@
 use crate::sync::Ordering;
 use crate::utils::spinlock::spin_lock::SpinLock;
 
-/// Tấm vé chứng minh đang giữ [`SpinLock`], và cũng là đường vào giá trị bên trong.
-///
-/// Vé rơi khỏi tầm nhìn là khoá tự nhả, nên không có đường nào quên trả khoá. Đừng giữ vé qua một
-/// đoạn code có thể chờ đợi: mọi thread khác sẽ quay tại chỗ suốt thời gian đó.
 pub struct SpinGuard<'a, T>
 {
     pub(super) lock: &'a SpinLock<T>,
