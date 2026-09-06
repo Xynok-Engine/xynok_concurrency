@@ -1,48 +1,31 @@
-use std::time::Duration;
-
 use xynok_std::unsafe_ptr::{HeapMut, HeapPtr};
 
-use crate::collection::ring_buffer::spmc_lifo_produce_fifo_consume::SpmcRingBufferLifoProduceFifoConsume;
 use crate::custom_type::Job;
 use crate::sync::thread::{park_timeout, Thread};
-use crate::sync::{AtomicBool, Ordering};
+use crate::sync::Ordering;
+use crate::thread_pool::consts::WORKER_SLEEP_DURATION;
 use crate::thread_pool::local::{Context, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::shared::ThreadPoolInner;
 use crate::thread_pool::worker::WorkerState::Stealing;
+use crate::thread_pool::worker_queue::WorkerQueue;
 use crate::utils::backoff::Backoff;
-use crate::utils::cache_padded::CachePadded;
 use crate::utils::random::Random;
 use crate::utils::steal::Steal;
 
-const STEAL_AMOUNT: usize = 64;
-
-/// Trần cho một giấc ngủ. Worker được gọi dậy ngay khi có việc mới, nên hạn giờ này chỉ là lưới an
-/// toàn cho những đường không ai báo được, ví dụ việc còn nằm trong deque riêng của worker khác.
-pub(crate) const SLEEP_SLICE: Duration = Duration::from_millis(100);
-
 pub struct Worker
 {
-    pub tasks:   SpmcRingBufferLifoProduceFifoConsume<Job>,
-    idx:         usize,
-    root:        HeapMut<ThreadPoolInner>,
-    /// Bật lên trong lúc đang ngủ, để người muốn gọi dậy biết nên gõ cửa ai.
-    is_sleeping: CachePadded<AtomicBool>,
+    pub tasks: WorkerQueue<Job>,
+    idx:       usize,
+    root:      HeapMut<ThreadPoolInner>,
 }
 
-/// Phần của một worker mà người khác nhìn thấy: deque để trộm việc, và thread để gọi dậy.
-pub struct WorkerHandle
+pub struct WorkerSpec
 {
     pub thread: Thread,
     pub worker: HeapPtr<Worker>,
 }
-/// Chỗ đứng của vòng lặp chính, và nó là **biến cục bộ** của [`Worker::update`] chứ không phải một
-/// trường của [`Worker`].
-///
-/// Để trong `Worker` thì mỗi lần ghi trạng thái là một lần mượn `&mut Worker`, tức là mượn cả cái
-/// struct, trong khi người khác đang đọc `is_sleeping` của chính nó để tìm người mà gõ cửa. Miri
-/// gọi đó là data race và nó nói đúng: hai bên chạm vào hai trường khác nhau, nhưng cái mượn thì
-/// phủ lên toàn bộ.
+
 enum WorkerState
 {
     Idle,
@@ -68,77 +51,21 @@ impl Worker
     pub fn new(task_size: usize, root: HeapMut<ThreadPoolInner>, idx: usize) -> Self
     {
         Self {
-            tasks:       SpmcRingBufferLifoProduceFifoConsume::new(task_size),
-            root:        root,
-            idx:         idx,
-            is_sleeping: CachePadded::new(AtomicBool::new(false)),
+            tasks: WorkerQueue::new(task_size),
+            root:  root,
+            idx:   idx,
         }
     }
 
     #[inline]
-    pub fn is_sleeping(&self) -> bool
+    pub fn pop_and_run_a_task(&self) -> bool
     {
-        self.is_sleeping.load(Ordering::SeqCst)
-    }
-
-    /// Chạy đúng một việc nếu tìm được, trả về `true` khi có chạy.
-    ///
-    /// Đây là nhịp việc của một điểm chờ: worker đang kẹt giữa chừng một job, đợi nhóm job con của
-    /// mình xong, thì không được nằm không. Ngủ ở đây là pool mất một core đúng lúc đang cần nhất,
-    /// và với các điểm chờ lồng nhau thì người ngủ có thể chính là người lẽ ra phải chạy cái job
-    /// mà nó đang đợi.
-    ///
-    /// Khác [`Worker::update`] ở chỗ nó chạy đúng một việc rồi trả quyền lại cho người gọi, để
-    /// người kia còn kiểm xem đã tới lúc đi chưa. Cũng vì thế mà nó không đụng tới `state`:
-    /// vòng lặp chính đang đứng ở đâu thì cứ để nguyên đó, chờ xong là quay về chỗ cũ.
-    pub fn run_one(&self, tick: u64) -> bool
-    {
-        // Deque riêng trước. Đây thường là chính mấy job con vừa spawn ra, dữ liệu còn nóng.
-        if let Some(task) = self.tasks.pop_lifo()
+        if let Some(task) = self.tasks.pop()
         {
             task.run_once();
             return true;
         }
-
-        if self.tasks.push_batch_by_taking_from_queue(STEAL_AMOUNT, &self.root.tasks) > 0
-        {
-            return self.run_one_from_local();
-        }
-
-        let mut rnd = Random::new(tick ^ self.idx as u64);
-        let steal_idx = rnd.below(self.root.workers.len() as u64) as usize;
-
-        // Trộm của chính mình thì hai đầu con trỏ cùng một ring, trạng thái con trỏ hỏng ngay.
-        if steal_idx == self.idx
-        {
-            return false;
-        }
-
-        let other = self.root.workers.at(steal_idx);
-        let other = other.with_mut(|p| unsafe { p.as_mut_unchecked().assume_init_ref() });
-        match other.worker.tasks.try_steal_batch_to(STEAL_AMOUNT, &self.tasks)
-        {
-            Steal::Success(_) => self.run_one_from_local(),
-            // Trượt một nạn nhân thì thôi, người gọi sẽ quay lại ngay sau khi kiểm điều kiện dừng.
-            Steal::Empty | Steal::Busy => false,
-        }
-    }
-
-    /// Vừa nạp được một lô thì lấy ngay một cái ra chạy.
-    ///
-    /// Vẫn có thể về tay không: lô vừa nạp có thể bị người khác trộm mất sạch ngay trong lúc này.
-    #[inline]
-    fn run_one_from_local(&self) -> bool
-    {
-        match self.tasks.pop_lifo()
-        {
-            Some(task) =>
-            {
-                task.run_once();
-                true
-            }
-            None => false,
-        }
+        false
     }
 
     pub fn update(params: ParamsWorker)
@@ -146,8 +73,7 @@ impl Worker
         params.priority.apply_to_current_thread();
 
         let mut backoff = Backoff::new();
-        // `new` còn đang ghi `workers`, chưa được nhìn vào đó. Cổng này cũng là đường ra cho
-        // trường hợp dựng pool hỏng: lúc đó `is_running` tắt và cổng không bao giờ mở.
+        // warmup
         loop
         {
             if !params.root.is_running.load(Ordering::Acquire)
@@ -162,8 +88,7 @@ impl Worker
         }
         backoff.reset();
 
-        // Ghi chỗ đứng sau khi qua cổng, không phải trước. Job chỉ chạy được từ đây trở đi, nên
-        // trước cổng chưa ai cần tới nó, mà đường thoát sớm ở trên thì lại không phải dọn.
+        // update local data
         THREAD_LOCAL_CTX.set(Context {
             pool:  params.root.id,
             index: params.worker.idx,
@@ -171,6 +96,8 @@ impl Worker
 
         let mut update_data = UpdateData::new(&params);
         let mut state = WorkerState::Idle;
+
+        // real update lofic
         while params.root.is_running.load(Ordering::Acquire)
         {
             let next_state = match state
@@ -179,19 +106,18 @@ impl Worker
                 WorkerState::Stealing(r) => steal(params, &mut update_data, r),
             };
 
-            // `Idle` nghĩa là vừa vơ được việc, `Stealing` là đi một vòng tay không. Tay không
-            // càng nhiều lần liên tiếp thì giãn nhịp càng rộng, hết cỡ thì ngủ hẳn thay vì quay
-            // vòng đốt core.
+            // `Idle` means we just picked up a task, while `Stealing` means we came back empty-handed.
+            // The more times we come back empty-handed, the longer we wait before trying again. Once we hit the limit, we put the thread to sleep.
             match next_state
             {
                 WorkerState::Idle => backoff.reset(),
 
-                // If we steal too many times, we should sleep.
+                // If we steal too many times, we should sleep
                 WorkerState::Stealing(_) => match backoff.is_completed()
                 {
                     true =>
                     {
-                        sleep(&params.worker, &params.root);
+                        params.worker.sleep();
                         backoff.reset();
                     }
                     false => backoff.snooze(),
@@ -202,30 +128,21 @@ impl Worker
             update_data.tick = update_data.tick.wrapping_add(1);
         }
     }
-}
 
-/// Nằm chờ tới khi có người gọi dậy, hoặc tới khi hết [`SLEEP_SLICE`].
-///
-/// Ghi danh trước rồi mới kiểm tra hàng đợi, không được làm ngược lại: nếu kiểm trước thì có thể
-/// có người đẩy việc vào ngay giữa hai bước, họ thấy chưa ai ngủ nên không gọi ai, còn mình thì
-/// vừa kịp nằm xuống.
-pub(crate) fn sleep(worker: &Worker, root: &ThreadPoolInner)
-{
-    worker.is_sleeping.store(true, Ordering::SeqCst);
-    root.sleeping.fetch_add(1, Ordering::SeqCst);
-
-    if root.tasks.is_empty() && root.is_running.load(Ordering::SeqCst)
+    pub fn sleep(&self)
     {
-        park_timeout(SLEEP_SLICE);
+        self.root.sleepings.push(self.idx);
+        if self.root.tasks.is_empty() && self.root.is_running.load(Ordering::Acquire)
+        {
+            park_timeout(WORKER_SLEEP_DURATION);
+        }
     }
-
-    root.sleeping.fetch_sub(1, Ordering::SeqCst);
-    worker.is_sleeping.store(false, Ordering::SeqCst);
 }
 
 fn drain_local_task(params: ParamsWorker) -> WorkerState
 {
-    while let Some(task) = params.worker.tasks.pop_lifo()
+    while let Some(task) = params.worker.tasks.pop()
+    //if let Some(task) = params.worker.tasks.pop()
     {
         task.run_once();
     }
@@ -241,7 +158,7 @@ fn steal(params: ParamsWorker, update_data: &mut UpdateData, last_stealing: Opti
         Some(steal_idx) => steal_from(params, update_data, steal_idx),
         None =>
         {
-            if worker.tasks.push_batch_by_taking_from_queue(STEAL_AMOUNT, &params.root.tasks) > 0
+            if worker.tasks.push_batch_by_taking_from_queue(worker.tasks.capacity(), &params.root.tasks) > 0
             {
                 return WorkerState::Idle;
             }
@@ -265,9 +182,8 @@ fn steal_from(params: ParamsWorker, update_data: &mut UpdateData, steal_idx: usi
         return Stealing(None);
     }
 
-    let other = params.root.workers.at(steal_idx);
-    let other = other.with_mut(|p| unsafe { p.as_mut_unchecked().assume_init_ref() });
-    match other.worker.tasks.try_steal_batch_to(STEAL_AMOUNT, &worker.tasks)
+    let other = unsafe { params.root.workers.get_at(steal_idx) };
+    match other.worker.tasks.try_steal_batch_to(worker.tasks.capacity() / 2, &worker.tasks)
     {
         Steal::Empty => WorkerState::Stealing(Some(next_victim_idx(steal_idx, update_data.total_worker))),
         Steal::Busy => WorkerState::Stealing(Some(steal_idx)),

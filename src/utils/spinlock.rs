@@ -2,7 +2,6 @@ use crate::sync::cell::UnsafeCell;
 use crate::sync::{AtomicBool, Ordering};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
-use crate::utils::spinlock::spin_guard::SpinGuard;
 
 pub struct SpinLock<T>
 {
@@ -113,6 +112,38 @@ impl<T> From<T> for SpinLock<T>
     }
 }
 
+pub struct SpinGuard<'a, T>
+{
+    pub(super) lock: &'a SpinLock<T>,
+}
+
+unsafe impl<T: Sync> Sync for SpinGuard<'_, T> {}
+
+impl<T> Drop for SpinGuard<'_, T>
+{
+    fn drop(&mut self)
+    {
+        self.lock.locked.store(false, Ordering::Release);
+    }
+}
+
+impl<T> std::ops::Deref for SpinGuard<'_, T>
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target
+    {
+        self.lock.val.with(|p| unsafe { &*p })
+    }
+}
+
+impl<T> std::ops::DerefMut for SpinGuard<'_, T>
+{
+    fn deref_mut(&mut self) -> &mut Self::Target
+    {
+        self.lock.val.with_mut(|p| unsafe { &mut *p })
+    }
+}
 #[cfg(all(test, loom))]
 mod test
 {

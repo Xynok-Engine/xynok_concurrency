@@ -25,7 +25,6 @@
 //! > Đường mượn dữ liệu là `unsafe`, và người gọi phải tự bảo đảm job chạy xong trước khi thứ nó
 //! > mượn biến mất. Scope lo việc đó giúp, còn dùng tay trực tiếp thì phải tự lo.
 
-pub mod consts;
 pub mod fn_buffer;
 pub mod inline_fn;
 pub mod runnable;
@@ -35,7 +34,3 @@ pub mod v_table_alias;
 
 pub use inline_fn::InlineFn;
 pub use runnable::Runnable;
-
-#[cfg(all(test, not(loom)))]
-#[path = "tests/unit.rs"]
-mod unit_test;

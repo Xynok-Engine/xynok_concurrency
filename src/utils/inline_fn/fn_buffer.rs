@@ -1,8 +1,7 @@
 use std::mem::MaybeUninit;
 
-use crate::utils::inline_fn::consts::INLINE_BYTES;
+use crate::utils::inline_fn::inline_fn::INLINE_BYTES;
 
-/// Vùng byte thô nơi closure nằm, canh lề 16 để chứa được hầu hết mọi kiểu thông thường.
 #[repr(C, align(16))]
 pub struct FnBuffer
 {

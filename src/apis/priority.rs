@@ -1,7 +1,36 @@
-use crate::apis::priority::level::Level;
+#[derive(Debug, Clone, Copy, Hash, Default, PartialEq, Eq)]
+pub enum Priority
+{
+    #[default]
+    Frame,
+    Io,
+    Background,
+}
+#[derive(Clone, Copy)]
+pub enum Level
+{
+    Interactive,
+    Low,
+}
+impl Priority
+{
+    pub fn apply_to_current_thread(self)
+    {
+        if cfg!(miri)
+        {
+            return;
+        }
+
+        match self
+        {
+            Self::Frame => apply(Level::Interactive),
+            Self::Background | Self::Io => apply(Level::Low),
+        }
+    }
+}
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-pub fn apply(level: Level)
+fn apply(level: Level)
 {
     const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
     const QOS_CLASS_UTILITY: u32 = 0x11;

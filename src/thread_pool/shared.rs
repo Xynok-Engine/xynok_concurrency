@@ -1,44 +1,42 @@
-use std::thread::park_timeout;
-
 use crate::custom_type::Job;
-use crate::sync::thread::{self, Thread, ThreadId};
-use crate::sync::{AtomicBool, AtomicUsize, Ordering};
-use crate::thread_pool::local::{THREAD_LOCAL_CTX, THREAD_LOCAL_SELF_ID};
-use crate::thread_pool::worker::{sleep, WorkerHandle, SLEEP_SLICE};
+use crate::sync::thread::{self};
+use crate::sync::{AtomicBool, Ordering};
+use crate::thread_pool::consts::WORKER_SLEEP_DURATION;
+use crate::thread_pool::local::THREAD_LOCAL_CTX;
+use crate::thread_pool::worker::WorkerSpec;
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_buffer::FixedBuffer;
 use crate::utils::queue_batching::QueueBatching;
+use std::thread::park_timeout;
 
 pub struct ThreadPoolInner
 {
     pub id:             u64,
     pub tasks:          QueueBatching<Job>,
-    pub workers:        FixedBuffer<WorkerHandle>,
+    pub workers:        FixedBuffer<WorkerSpec>,
     pub host_index:     usize,
-    pub host_id:        ThreadId,
     pub init_completed: CachePadded<AtomicBool>,
     pub is_running:     CachePadded<AtomicBool>,
-    pub sleeping:       CachePadded<AtomicUsize>,
+    pub sleepings:      QueueBatching<usize>,
 }
 
 impl ThreadPoolInner
 {
-    pub fn local_worker(&self) -> Option<&WorkerHandle>
+    /// teturns only the worker belonging to the current pool
+    pub fn current_worker(&self) -> Option<&WorkerSpec>
     {
         let local_ctx = THREAD_LOCAL_CTX.get();
         if local_ctx.pool == self.id
         {
             return Some(unsafe { self.workers.get_at(local_ctx.index) });
         }
-        let is_host = THREAD_LOCAL_SELF_ID.with(|id| *id == self.host_id);
-
-        is_host.then(|| unsafe { self.workers.get_at(self.host_index) })
+        None
     }
 
     pub fn run_until(&self, done: impl Fn() -> bool)
     {
-        let Some(handle) = self.local_worker()
+        let Some(handle) = self.current_worker()
         else
         {
             let mut backoff = Backoff::new();
@@ -46,7 +44,7 @@ impl ThreadPoolInner
             {
                 match backoff.is_completed()
                 {
-                    true => park_timeout(SLEEP_SLICE),
+                    true => park_timeout(WORKER_SLEEP_DURATION),
                     false => backoff.snooze(),
                 }
             }
@@ -59,19 +57,17 @@ impl ThreadPoolInner
         {
             tick = tick.wrapping_add(1);
 
-            if handle.worker.run_one(tick)
+            if handle.worker.pop_and_run_a_task()
             {
                 backoff.reset();
                 continue;
             }
 
-            // Không tìm được việc nào. Giãn nhịp rồi ngủ, y như vòng lặp chính, vì lúc này chờ
-            // hay làm việc thì cũng chỉ có bấy nhiêu việc trong pool.
             match backoff.is_completed()
             {
                 true =>
                 {
-                    sleep(&handle.worker, self);
+                    handle.worker.sleep();
                     backoff.reset();
                 }
                 false => backoff.snooze(),
@@ -82,5 +78,40 @@ impl ThreadPoolInner
     pub fn push(&self, task: Job)
     {
         self.tasks.push(task);
+        self.wake_one();
+    }
+
+    /// wakes up, joins, and drops all current workers
+    pub fn shutdown(inner: &ThreadPoolInner, handles: &mut Vec<thread::JoinHandle<()>>, worker_count: usize)
+    {
+        inner.is_running.store(false, Ordering::Release);
+
+        for handle in handles.iter()
+        {
+            handle.thread().unpark();
+        }
+
+        for handle in handles.drain(..)
+        {
+            let _ = handle.join();
+        }
+
+        for i in 0..worker_count
+        {
+            unsafe { inner.workers.drop_at(i) };
+        }
+    }
+}
+
+impl ThreadPoolInner
+{
+    #[inline]
+    fn wake_one(&self)
+    {
+        if let Some(worker_idx) = self.sleepings.pop()
+        {
+            let worker = unsafe { self.workers.get_at(worker_idx) };
+            worker.thread.unpark();
+        }
     }
 }

@@ -1,14 +1,14 @@
 use std::marker::PhantomData;
 
-use crate::collection::ring_buffer::consts::MAX_CAPACITY;
 use crate::custom_type::Job;
 use crate::sync::cell::UnsafeCell;
-use crate::sync::{thread, AtomicBool, AtomicUsize, Ordering};
-use crate::thread_pool::local::{next_pool_id, THREAD_LOCAL_SELF_ID};
+use crate::sync::{thread, AtomicBool, Ordering};
+use crate::thread_pool::consts::MAX_WORKER_TASK_CAPACITY;
+use crate::thread_pool::local::{next_pool_id, Context, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::scope::Scope;
 use crate::thread_pool::shared::ThreadPoolInner;
-use crate::thread_pool::worker::{Worker, WorkerHandle};
+use crate::thread_pool::worker::{Worker, WorkerSpec};
 use crate::utils::available_cores;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_buffer::FixedBuffer;
@@ -21,15 +21,17 @@ pub(crate) mod worker;
 pub(crate) mod params;
 pub(crate) mod local;
 pub(crate) mod shared;
+pub(crate) mod worker_queue;
+pub(crate) mod consts;
 
 pub mod scope;
 pub mod cfg;
 
 use cfg::CfgThreadPool;
 
-//#[cfg(all(test, not(loom)))]
-//#[path = "tests/unit.rs"]
-//mod unit_test;
+#[cfg(all(test, not(loom)))]
+#[path = "tests/unit.rs"]
+mod unit_test;
 
 pub struct ThreadPool
 {
@@ -46,22 +48,22 @@ impl ThreadPool
 
         let per_worker_task_capacity = cfg.per_worker_task_capacity.max(1).next_power_of_two();
         assert!(
-            per_worker_task_capacity < MAX_CAPACITY,
+            per_worker_task_capacity < MAX_WORKER_TASK_CAPACITY,
             "`per_worker_task_capacity` rounded up to `{}`, which exceeds the `u32` limit of `{}`",
             per_worker_task_capacity,
-            MAX_CAPACITY
+            MAX_WORKER_TASK_CAPACITY
         );
 
         let host_index = total_worker;
+
         let inner = HeapPtr::new(ThreadPoolInner {
             id:             next_pool_id(),
             tasks:          QueueBatching::with_capacity(cfg.task_capacity),
-            workers:        FixedBuffer::<WorkerHandle>::new(total_worker + 1),
+            workers:        FixedBuffer::<WorkerSpec>::new(total_worker + 1),
             host_index:     host_index,
-            host_id:        THREAD_LOCAL_SELF_ID.with(|id| *id),
             init_completed: CachePadded::new(AtomicBool::new(false)),
             is_running:     CachePadded::new(AtomicBool::new(true)),
-            sleeping:       CachePadded::new(AtomicUsize::new(0)),
+            sleepings:      QueueBatching::with_capacity(total_worker - 1),
         });
 
         let mut handles = Vec::with_capacity(total_worker);
@@ -81,7 +83,7 @@ impl ThreadPool
             {
                 Ok(handle) =>
                 {
-                    let worker_handle = WorkerHandle {
+                    let worker_handle = WorkerSpec {
                         thread: handle.thread().clone(),
                         worker: worker,
                     };
@@ -92,10 +94,7 @@ impl ThreadPool
                 }
                 Err(e) =>
                 {
-                    // Các worker đã spawn đang đứng chờ ở cổng, và cổng thì không bao giờ mở nữa.
-                    // Phải gọi chúng về và đợi đủ trước khi panic, vì lúc unwind `inner` bị thả mà
-                    // chúng vẫn đang đọc.
-                    shutdown(&inner, &mut handles, i);
+                    ThreadPoolInner::shutdown(&inner, &mut handles, i);
                     panic!("Failed to create worker for `{}`: {}", cfg.name, e);
                 }
             }
@@ -105,7 +104,7 @@ impl ThreadPool
         unsafe {
             inner.workers.write(
                 host_index,
-                WorkerHandle {
+                WorkerSpec {
                     thread: thread::current(),
                     worker: HeapPtr::new(Worker::new(per_worker_task_capacity, inner.as_ref_mut(), host_index)),
                 },
@@ -125,43 +124,43 @@ impl ThreadPool
     {
         self.inner.push(task);
     }
-    pub fn spawn_local(&self, task: Job) -> Result<(), Job>
-    {
-        let Some(handle) = self.inner.local_worker()
-        else
-        {
-            return Err(task);
-        };
-
-        handle.worker.tasks.push(task)?;
-
-        Ok(())
-    }
 
     pub fn scope<'scope, R>(&self, f: impl FnOnce(&Scope<'scope>) -> R) -> R
     {
-        let scope = Scope {
-            root:   self.inner.as_ref_mut(),
-            latch:  Latch::new(),
-            panic:  UnsafeCell::new(None),
-            marker: PhantomData,
-        };
+        let scope = Scope::new(self.inner.as_ref_mut());
+
+        // when the scope is draining, the caller might come from a different pool. We don't really care about that,
+        // but if it happens, we need to override the current thread context to match the caller's data. After
+        // all tasks are drained, we can set it back.
+        // we need to override the caller data here, as the scope will push the task into the caller's queue.
+        let previous_ctx = THREAD_LOCAL_CTX.get();
+        let is_outsider = previous_ctx.pool != self.inner.id;
+        if is_outsider
+        {
+            THREAD_LOCAL_CTX.set(Context {
+                pool:  self.inner.id,
+                index: self.inner.host_index,
+            });
+        }
 
         let outcome = catch_unwind(AssertUnwindSafe(|| f(&scope)));
 
-        // Thân scope chết giữa chừng thì mấy job còn xếp hàng không còn ý nghĩa gì nữa. Vẫn phải chờ
-        // chúng trả vé, nhưng không việc gì phải chạy hết phần thân của chúng.
         if outcome.is_err()
         {
-            scope.latch.cancel();
+            scope.cancel();
         }
 
-        // Chờ cả khi `f` đã panic: bỏ mặc job chạy tiếp trong lúc khung stack chúng mượn đang bị tháo
-        // dỡ thì đó đúng là cái use-after-free mà scope sinh ra để chặn.
-        scope.root.run_until(|| scope.latch.is_completed());
+        // we need to wait even if `f` panics. Letting a job continue running while its borrowed stack frame
+        // is being torn down is exactly the kind of use-after-free that scopes are designed to prevent
+        self.inner.run_until(|| scope.is_completed());
 
-        // Tới đây mọi vé đã thả, nên không còn ai ghi vào ô panic nữa.
-        let job_panic = scope.panic.with_mut(|slot| unsafe { (*slot).take() });
+        if is_outsider
+        {
+            THREAD_LOCAL_CTX.set(previous_ctx);
+        }
+
+        // At this point, every ticket has been released, so no one else can write to the panic cell.
+        let job_panic = scope.take_panic();
 
         match (outcome, job_panic)
         {
@@ -176,39 +175,7 @@ impl Drop for ThreadPool
 {
     fn drop(&mut self)
     {
-        // Worker giữ con trỏ thô tới `inner`, nên phải chắc chắn không còn ai chạy trước khi
-        // `inner` được thả ở ngay sau đây. Việc còn tồn trong hàng đợi bị bỏ, ai cần chạy cho hết
-        // thì phải đồng bộ trước khi thả pool.
         let worker_count = self.inner.workers.len();
-        shutdown(&self.inner, &mut self.handles, worker_count);
-    }
-}
-
-/// Tắt cờ, đợi mọi worker dừng hẳn, rồi mới thu hồi `worker_count` ô đầu của `workers`.
-///
-/// Thứ tự ở đây là phần quan trọng nhất: chừng nào còn một worker sống thì nó vẫn có quyền ngó
-/// sang deque của bất kỳ ai, nên không được thả ô nào trước khi join xong tất cả.
-///
-/// `FixedBuffer` không tự drop phần tử, nên đây là nơi duy nhất lấy chúng ra, và chỉ được gọi đúng
-/// một lần cho mỗi pool.
-fn shutdown(inner: &ThreadPoolInner, handles: &mut Vec<thread::JoinHandle<()>>, worker_count: usize)
-{
-    inner.is_running.store(false, Ordering::Release);
-
-    // Ai đang ngủ thì gõ cửa, không thì phải đợi hết `SLEEP_SLICE` mới thấy cờ đã tắt. Gõ cả
-    // những người đang thức cũng không hại gì, permit thừa sẽ bị bỏ qua ở vòng sau.
-    for handle in handles.iter()
-    {
-        handle.thread().unpark();
-    }
-
-    for handle in handles.drain(..)
-    {
-        let _ = handle.join();
-    }
-
-    for i in 0..worker_count
-    {
-        unsafe { inner.workers.drop_at(i) };
+        ThreadPoolInner::shutdown(&self.inner, &mut self.handles, worker_count);
     }
 }

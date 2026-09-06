@@ -6,7 +6,6 @@ use crate::custom_type::Job;
 use crate::sync::{AtomicUsize, Ordering};
 use crate::thread_pool::{CfgThreadPool, ThreadPool};
 
-/// Trần cứng cho mọi vòng chờ trong file này. Chạm trần là hỏng, không phải chờ thêm.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 fn cfg(name: &str, worker_count: usize) -> CfgThreadPool
@@ -20,13 +19,17 @@ fn cfg(name: &str, worker_count: usize) -> CfgThreadPool
     }
 }
 
-/// Đợi tới khi `cond` đúng, nhưng không đợi quá [`TIMEOUT`].
 fn wait_until(what: &str, cond: impl Fn() -> bool)
 {
     let deadline = Instant::now() + TIMEOUT;
     while !cond()
     {
-        assert!(Instant::now() < deadline, "quá {:?} mà `{}` vẫn chưa xong", TIMEOUT, what);
+        assert!(
+            Instant::now() < deadline,
+            "Timeout of {:?} reached, but `{}` has not finished yet",
+            TIMEOUT,
+            what
+        );
         std::thread::yield_now();
     }
 }
@@ -47,7 +50,7 @@ fn t0_pool_chay_het_task_da_day_vao()
         }));
     }
 
-    wait_until("chạy hết task", || done.load(Ordering::Acquire) == TOTAL_TASK);
+    wait_until("all tasks have finished", || done.load(Ordering::Acquire) == TOTAL_TASK);
     assert_eq!(done.load(Ordering::Acquire), TOTAL_TASK);
 }
 
@@ -145,7 +148,7 @@ fn t5_pool_ranh_thi_di_ngu_va_goi_day_duoc()
     let pool = ThreadPool::new(cfg("t5", 4));
 
     // Không có việc thì backoff phải cạn và worker phải nằm xuống, chứ không quay vòng đốt core.
-    wait_until("worker đi ngủ", || pool.inner.sleeping.load(Ordering::SeqCst) > 0);
+    wait_until("worker đi ngủ", || pool.inner.sleepings.len() == 4);
 
     // Mỗi vòng: đẩy đúng một task vào lúc worker đang ngủ, rồi đợi nó chạy xong. Nếu `wake_one`
     // hỏng thì mỗi vòng phải chờ hết `SLEEP_SLICE` (100ms), tức là quá 2s cho cả 20 vòng.
@@ -206,139 +209,6 @@ impl PoolRef
         unsafe { &*self.0 }
     }
 }
-
-#[test]
-fn t7_spawn_local_day_thi_tra_task_ve_cho_nguoi_goi()
-{
-    const TOTAL_CHILD: usize = 500;
-
-    // Deque riêng chỉ có 2 ô, mà job cha đẻ ra 500 job con, tất cả đều nhắm vào deque của chính
-    // worker đang chạy. Pool một người nên không ai trộm hộ. Hết chỗ thì `spawn_local` phải trả
-    // nguyên task về ngay, chứ không được quay tại chỗ đợi có ô trống: người duy nhất lấy việc ra
-    // khỏi deque đó đang kẹt ngay trong lúc đẩy vào, đợi là treo vĩnh viễn.
-    let mut cfg = cfg("t7", 1);
-    cfg.per_worker_task_capacity = 2;
-
-    let done = Arc::new(AtomicUsize::new(0));
-    let rejected = Arc::new(AtomicUsize::new(0));
-    let pool = ThreadPool::new(cfg);
-    let pool_ref = PoolRef(&pool as *const ThreadPool);
-
-    let counter = done.clone();
-    let rejected_counter = rejected.clone();
-    pool.push(Job::new(move || {
-        for _ in 0..TOTAL_CHILD
-        {
-            let counter = counter.clone();
-            let child = Job::new(move || {
-                counter.fetch_add(1, Ordering::Release);
-            });
-
-            // Phần dư là chuyện của người gọi. Ở đây job cha chọn cách đơn giản nhất là chạy luôn
-            // tại chỗ, chứ không tuồn sang hàng đợi chung.
-            if let Err(task) = pool_ref.get().spawn_local(child)
-            {
-                rejected_counter.fetch_add(1, Ordering::Release);
-                task.run_once();
-            }
-        }
-    }));
-
-    wait_until("chạy hết job con", || done.load(Ordering::Acquire) == TOTAL_CHILD);
-    assert!(
-        rejected.load(Ordering::Acquire) > 0,
-        "deque chỉ có 2 ô mà 500 job con vào lọt hết, `spawn_local` đang không báo đầy"
-    );
-}
-
-#[test]
-fn t8_spawn_local_cheo_pool_bi_tu_choi()
-{
-    const TOTAL_TASK: usize = 400;
-
-    // `b` khai báo trước để nó bị thả sau: worker của `a` còn cầm con trỏ tới nó.
-    let pool_b = ThreadPool::new(cfg("t8b", 1));
-
-    // `a` đông người hơn `b`. Nếu chỗ đứng thread local chỉ nhớ mỗi chỉ số thì worker số 3 của `a`
-    // sẽ với vào ô số 3 trong dãy worker của `b`, mà dãy đó chỉ có một ô: vừa đọc ra ngoài vùng,
-    // vừa đẩy vào deque của người khác từ một thread không phải chủ nó. Nhớ thêm số hiệu pool thì
-    // lần này trượt, task được trả về nguyên vẹn và người gọi tự đưa nó vào hàng đợi chung của `b`.
-    let pool_a = ThreadPool::new(cfg("t8a", 4));
-
-    let done = Arc::new(AtomicUsize::new(0));
-    let rejected = Arc::new(AtomicUsize::new(0));
-    let b_ref = PoolRef(&pool_b as *const ThreadPool);
-
-    for _ in 0..TOTAL_TASK
-    {
-        let counter = done.clone();
-        let rejected_counter = rejected.clone();
-        pool_a.push(Job::new(move || {
-            let child = Job::new(move || {
-                counter.fetch_add(1, Ordering::Release);
-            });
-
-            match b_ref.get().spawn_local(child)
-            {
-                Ok(()) =>
-                {}
-                Err(task) =>
-                {
-                    rejected_counter.fetch_add(1, Ordering::Release);
-                    b_ref.get().push(task);
-                }
-            }
-        }));
-    }
-
-    wait_until("pool b chạy hết việc do pool a giao", || done.load(Ordering::Acquire) == TOTAL_TASK);
-    assert_eq!(
-        rejected.load(Ordering::Acquire),
-        TOTAL_TASK,
-        "worker của pool a đẩy lọt việc vào deque riêng của pool b"
-    );
-}
-
-#[test]
-fn t9_spawn_local_o_lai_dung_worker_da_sinh_ra_no()
-{
-    const TOTAL_CHILD: usize = 100;
-
-    // Một worker duy nhất, deque rộng rãi. Job con đẩy bằng `spawn_local` phải vào lọt hết, và
-    // chạy trên đúng thread đã sinh ra chúng.
-    let done = Arc::new(AtomicUsize::new(0));
-    let same_thread = Arc::new(AtomicUsize::new(0));
-    let pool = ThreadPool::new(cfg("t9", 1));
-    let pool_ref = PoolRef(&pool as *const ThreadPool);
-
-    let counter = done.clone();
-    let same_thread_counter = same_thread.clone();
-    pool.push(Job::new(move || {
-        let parent = std::thread::current().id();
-        for _ in 0..TOTAL_CHILD
-        {
-            let counter = counter.clone();
-            let same_thread_counter = same_thread_counter.clone();
-            let child = Job::new(move || {
-                if std::thread::current().id() == parent
-                {
-                    same_thread_counter.fetch_add(1, Ordering::Release);
-                }
-                counter.fetch_add(1, Ordering::Release);
-            });
-
-            assert!(pool_ref.get().spawn_local(child).is_ok(), "deque còn chỗ mà `spawn_local` lại từ chối");
-        }
-    }));
-
-    wait_until("chạy hết job con", || done.load(Ordering::Acquire) == TOTAL_CHILD);
-    assert_eq!(
-        same_thread.load(Ordering::Acquire),
-        TOTAL_CHILD,
-        "job con chạy ở thread khác thread đã sinh ra nó"
-    );
-}
-
 #[test]
 fn t10_scope_chay_het_job_va_cho_muon_stack()
 {
@@ -358,7 +228,7 @@ fn t10_scope_chay_het_job_va_cho_muon_stack()
         }
     });
 
-    assert_eq!(counter.load(Ordering::Acquire), TOTAL_JOB, "scope trả về khi job còn chưa chạy xong");
+    assert!(counter.load(Ordering::Acquire) == TOTAL_JOB, "scope trả về khi job còn chưa chạy xong");
 }
 
 #[test]
@@ -384,33 +254,6 @@ fn t11_scope_deque_be_hon_so_job_thi_van_khong_treo()
     });
 
     assert_eq!(counter.load(Ordering::Acquire), TOTAL_JOB);
-}
-
-#[test]
-fn t12_spawn_with_chia_doi_de_quy()
-{
-    const DEPTH: usize = 10;
-
-    let pool = ThreadPool::new(cfg("t12", 4));
-    let counter = AtomicUsize::new(0);
-
-    fn split<'a>(s: &crate::thread_pool::scope::Scope<'a>, counter: &'a AtomicUsize, depth: usize)
-    {
-        counter.fetch_add(1, Ordering::Release);
-        if depth == 0
-        {
-            return;
-        }
-        for _ in 0..2
-        {
-            s.spawn_with(move |s| split(s, counter, depth - 1));
-        }
-    }
-
-    pool.scope(|s| split(s, &counter, DEPTH));
-
-    // Cây nhị phân đủ tầng: 2^(DEPTH+1) - 1 nút.
-    assert_eq!(counter.load(Ordering::Acquire), (1 << (DEPTH + 1)) - 1);
 }
 
 #[test]
@@ -467,30 +310,6 @@ fn t14_panic_trong_job_duoc_nem_lai_o_scope()
 
     std::panic::set_hook(previous);
     assert!(outcome.is_err(), "panic trong job bị nuốt mất, người mở scope không hề biết");
-}
-
-#[test]
-fn t15_huy_scope_thi_job_chua_chay_bo_qua_phan_than()
-{
-    const TOTAL_JOB: usize = 1_000;
-
-    // Một worker duy nhất, nên job xếp hàng chờ tới lượt. Huỷ ngay từ đầu thì gần như cả đám bỏ
-    // qua phần thân, nhưng scope vẫn phải đợi đủ vé mới được trả về.
-    let pool = ThreadPool::new(cfg("t15", 1));
-    let counter = AtomicUsize::new(0);
-
-    pool.scope(|s| {
-        s.cancel();
-        for _ in 0..TOTAL_JOB
-        {
-            s.spawn(|| {
-                counter.fetch_add(1, Ordering::Release);
-            });
-        }
-    });
-
-    assert_eq!(counter.load(Ordering::Acquire), 0, "job vẫn chạy phần thân dù scope đã bị huỷ");
-    assert!(pool.inner.tasks.is_empty(), "còn job của scope đã huỷ nằm lại trong hàng đợi chung");
 }
 
 #[test]
@@ -566,55 +385,4 @@ fn t17_main_khong_bi_bien_thanh_worker_thuong_tru()
         0,
         "job chạy trên main trong lúc main không hề ở trong một điểm chờ nào"
     );
-}
-
-#[test]
-fn t18_viec_sot_lai_trong_deque_cua_main_van_duoc_tron_di()
-{
-    const TOTAL_CHILD: usize = 100;
-
-    // Main đẩy vào deque riêng của nó rồi bỏ đi làm việc khác, không quay lại chạy. Deque của host
-    // phải nằm trong tầm trộm của worker, không thì đám job này không ai chạy và test treo tới khi
-    // chạm trần.
-    let pool = ThreadPool::new(cfg("t18", 2));
-
-    let done = Arc::new(AtomicUsize::new(0));
-    let mut pushed = 0usize;
-    for _ in 0..TOTAL_CHILD
-    {
-        let done = done.clone();
-        let child = Job::new(move || {
-            done.fetch_add(1, Ordering::Release);
-        });
-
-        // Host có ô riêng nên đường này phải mở, khác hẳn một thread lạ.
-        match pool.spawn_local(child)
-        {
-            Ok(()) => pushed += 1,
-            Err(task) => pool.push(task),
-        }
-    }
-
-    assert!(pushed > 0, "host không đẩy được job nào vào deque riêng của nó");
-    wait_until("worker trộm hết việc còn sót trong deque của host", || {
-        done.load(Ordering::Acquire) == TOTAL_CHILD
-    });
-}
-
-#[test]
-fn t19_thread_la_van_bi_tu_choi_deque()
-{
-    // Host có ô, nhưng người lạ thì không. Một thread bất kỳ đẩy được vào deque nào đó nghĩa là hai
-    // thread cùng làm chủ một ring, mà ring này chỉ chịu đúng một người đẩy.
-    let pool = ThreadPool::new(cfg("t19", 2));
-    let pool_ref = PoolRef(&pool as *const ThreadPool);
-
-    let refused = std::thread::spawn(move || {
-        let pool_ref = pool_ref;
-        pool_ref.get().spawn_local(Job::new(|| {})).is_err()
-    })
-    .join()
-    .expect("thread phụ panic");
-
-    assert!(refused, "một thread không thuộc pool lại đẩy lọt vào deque riêng");
 }

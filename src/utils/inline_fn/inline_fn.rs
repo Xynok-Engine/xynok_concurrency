@@ -1,11 +1,9 @@
-use std::mem::ManuallyDrop;
-
 use crate::sync::cell::UnsafeCell;
-use crate::utils::inline_fn::consts::INLINE_BYTES;
 use crate::utils::inline_fn::fn_buffer::FnBuffer;
 use crate::utils::inline_fn::runnable::Runnable;
 use crate::utils::inline_fn::v_table::VTable;
 use crate::utils::inline_fn::v_table_alias::VTableAlias;
+use std::mem::ManuallyDrop;
 
 /// src: https://doc.rust-lang.org/std/task/struct.RawWakerVTable.html
 #[repr(C)]
@@ -14,6 +12,7 @@ pub struct InlineFn
     vtable:    &'static VTable,
     fn_buffer: UnsafeCell<FnBuffer>,
 }
+pub const INLINE_BYTES: usize = 48;
 
 unsafe impl Send for InlineFn {}
 

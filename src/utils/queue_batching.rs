@@ -5,26 +5,12 @@ use crate::sync::{AtomicBool, AtomicUsize, Ordering};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_ring_buffer::FixedRingBuffer;
-use crate::utils::queue_batching::queue_batching_guard::QueueBatchingGuard;
 
-/// Hàng đợi vào trước ra trước cho nhiều người đẩy và nhiều người rút, sức chứa tự nới.
-///
-/// Mọi thao tác đều có bản gom lô đi kèm, để chi phí chiếm quyền được chia cho cả cụm phần tử thay
-/// vì trả lại từ đầu cho từng phần tử một.
 pub struct QueueBatching<T>
 {
-    pub(super) elements: UnsafeCell<VecDeque<T>>,
-    pub(super) locked:   CachePadded<AtomicBool>,
-    /// Bản sao độ dài đọc được mà không cần giành quyền.
-    ///
-    /// Người giữ vé cập nhật nó ngay trước lúc nhả quyền, nên tại mỗi thời điểm quyền được nhả thì
-    /// nó luôn đúng. Người đọc thấy giá trị cũ vài nhịp là chuyện bình thường: họ chỉ dùng nó để
-    /// quyết định có bõ công giành quyền hay không, đoán sai thì lần giành quyền tiếp theo nói sự
-    /// thật.
-    ///
-    /// Một chỗ *không* được phép dựa vào nó: quyết định cho thread đi ngủ. Đọc ra `0` rồi park có
-    /// thể bỏ lỡ phần tử vừa được đẩy vào. Chống lost wakeup là việc của giao thức ngủ ở tầng trên.
-    pub(super) len:      CachePadded<AtomicUsize>,
+    elements: UnsafeCell<VecDeque<T>>,
+    locked:   CachePadded<AtomicBool>,
+    len:      CachePadded<AtomicUsize>,
 }
 
 unsafe impl<T: Send> Send for QueueBatching<T> {}
@@ -294,5 +280,49 @@ impl<T: std::fmt::Debug> std::fmt::Debug for QueueBatching<T>
             None => builder.field("elements", &format_args!("<locked>")),
         }
         .finish()
+    }
+}
+
+pub struct QueueBatchingGuard<'a, T>
+{
+    queue_batching: &'a QueueBatching<T>,
+}
+
+unsafe impl<T: Sync> Sync for QueueBatchingGuard<'_, T> {}
+
+impl<T> Drop for QueueBatchingGuard<'_, T>
+{
+    fn drop(&mut self)
+    {
+        let len = self.len();
+        self.queue_batching.release(len);
+    }
+}
+
+impl<T> std::ops::Deref for QueueBatchingGuard<'_, T>
+{
+    type Target = VecDeque<T>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target
+    {
+        self.queue_batching.elements.with(|p| unsafe { &*p })
+    }
+}
+
+impl<T> std::ops::DerefMut for QueueBatchingGuard<'_, T>
+{
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target
+    {
+        self.queue_batching.elements.with_mut(|p| unsafe { &mut *p })
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for QueueBatchingGuard<'_, T>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    {
+        std::fmt::Debug::fmt(&**self, f)
     }
 }

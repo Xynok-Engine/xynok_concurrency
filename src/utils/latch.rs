@@ -35,14 +35,11 @@ impl Latch
         LatchTicket { latch: self }
     }
 
+    /// returns true if `canceled` is currently false, and then CAS it to true
     #[cold]
     pub fn try_cancel(&self) -> bool
     {
-        match self.canceled.compare_exchange_weak(false, true, Ordering::Release, Ordering::Acquire)
-        {
-            Ok(_) => true,
-            Err(e) => e,
-        }
+        self.canceled.compare_exchange_weak(false, true, Ordering::Release, Ordering::Acquire).is_ok()
     }
     #[inline]
     pub fn cancel(&self)
