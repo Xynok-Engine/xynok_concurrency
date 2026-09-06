@@ -23,7 +23,7 @@ impl Latch
     pub fn new() -> Self
     {
         Self {
-            remaining: CachePadded::new(AtomicUsize::new(0)),
+            remaining: CachePadded::new(AtomicUsize::new(1)),
             canceled:  CachePadded::new(AtomicBool::new(false)),
         }
     }
@@ -63,7 +63,7 @@ impl Latch
     #[inline]
     pub fn is_completed(&self) -> bool
     {
-        self.remaining.load(Ordering::Acquire) < 1
+        self.remaining.load(Ordering::Acquire) <= 1
     }
 }
 

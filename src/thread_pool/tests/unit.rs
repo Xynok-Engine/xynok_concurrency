@@ -10,6 +10,28 @@ use crate::utils::available_cores;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Shrinks the workload of a test when it is built for Miri.
+///
+/// Miri interprets the program instead of running it, so it is a couple of hundred times slower
+/// than a native build. Left at their real sizes, the counts in this file turn a single
+/// `cargo miri test` into a coffee break, and `-Zmiri-many-seeds` into an afternoon. What Miri is
+/// looking for is the order the threads step on each other, not the sheer volume, so a few dozen
+/// tasks buy the same coverage. Everything below 30 is already small enough to keep as it is.
+#[cfg(miri)]
+const fn scaled(n: usize) -> usize
+{
+    match n < 30
+    {
+        true => n,
+        false => 30,
+    }
+}
+#[cfg(not(miri))]
+const fn scaled(n: usize) -> usize
+{
+    n
+}
+
 fn cfg(name: &str, worker_count: usize) -> CfgThreadPool
 {
     CfgThreadPool {
@@ -65,6 +87,14 @@ fn mute_panic_output() -> impl Drop
     {
         fn drop(&mut self)
         {
+            // `set_hook` panics when the current thread is already unwinding, and a panic inside a
+            // `Drop` turns into an abort. If the test is failing, aborting here would hide the
+            // assertion message behind "panic in a destructor during cleanup", so just leave the
+            // hook alone in that case.
+            if std::thread::panicking()
+            {
+                return;
+            }
             if let Some(hook) = self.0.take()
             {
                 std::panic::set_hook(hook);
@@ -84,7 +114,7 @@ fn mute_panic_output() -> impl Drop
 #[test]
 fn t0_pool_runs_every_pushed_task()
 {
-    const TOTAL_TASK: usize = 2_000;
+    const TOTAL_TASK: usize = scaled(2_000);
 
     let done = Arc::new(AtomicUsize::new(0));
     let pool = ThreadPool::new(cfg("t0", 4));
@@ -142,7 +172,7 @@ fn t2_dropping_a_fresh_empty_pool()
 #[test]
 fn t3_single_worker_pool_still_runs()
 {
-    const TOTAL_TASK: usize = 500;
+    const TOTAL_TASK: usize = scaled(500);
 
     let done = Arc::new(AtomicUsize::new(0));
     let pool = ThreadPool::new(cfg("t3", 1));
@@ -164,8 +194,8 @@ fn t4_drop_while_the_workers_are_busy_stealing()
     // The nastiest window `Drop` has: releasing the pool while workers are still peeking into each
     // other's deques. If `shutdown` reclaims a worker before every thread is joined, this is where
     // we read freed memory. A hard cap of 200 rounds is enough to expose it without running forever.
-    const ROUND: usize = 200;
-    const TASK_PER_ROUND: usize = 300;
+    const ROUND: usize = scaled(200);
+    const TASK_PER_ROUND: usize = scaled(300);
 
     let done = Arc::new(AtomicUsize::new(0));
     for round in 0..ROUND
@@ -229,7 +259,7 @@ fn t5_idle_workers_go_to_sleep_and_can_be_woken_up()
 #[test]
 fn t6_odd_capacity_is_rounded_up_to_a_power_of_two()
 {
-    const TOTAL_TASK: usize = 400;
+    const TOTAL_TASK: usize = scaled(400);
 
     // 100 is not a power of two. It used to be guarded by a `debug_assert` only, so release builds
     // quietly computed the wrong mask. Now it has to round itself up to 128 and just work.
@@ -263,7 +293,7 @@ fn t7_worker_count_is_clamped_to_the_available_cores()
 #[test]
 fn t8_zero_workers_falls_back_to_one()
 {
-    const TOTAL_TASK: usize = 200;
+    const TOTAL_TASK: usize = scaled(200);
 
     // A pool with no worker would swallow every task without a word. One worker is the floor.
     let pool = ThreadPool::new(cfg("t8", 0));
@@ -283,7 +313,7 @@ fn t8_zero_workers_falls_back_to_one()
 #[test]
 fn t9_zero_capacity_falls_back_to_a_usable_deque()
 {
-    const TOTAL_TASK: usize = 300;
+    const TOTAL_TASK: usize = scaled(300);
 
     // A deque with zero slots cannot hold anything, so the config gets bumped up. Whatever the
     // floor ends up being, stealing splits the deque in half, so it has to stay big enough for
@@ -318,7 +348,7 @@ fn t10_capacity_past_the_u32_limit_is_rejected_loudly()
 #[test]
 fn t11_every_task_runs_exactly_once()
 {
-    const TOTAL_TASK: usize = 4_000;
+    const TOTAL_TASK: usize = scaled(4_000);
 
     // A plain counter only proves the total adds up. One slot per task also catches a task being
     // handed out twice, which is exactly what a botched steal looks like.
@@ -347,7 +377,7 @@ fn t11_every_task_runs_exactly_once()
 fn t12_push_from_several_threads_at_once()
 {
     const PRODUCER: usize = 4;
-    const TASK_PER_PRODUCER: usize = 500;
+    const TASK_PER_PRODUCER: usize = scaled(500);
 
     // The shared queue takes work from any thread, not only from the one that built the pool.
     let pool = ThreadPool::new(cfg("t12", 4));
@@ -376,7 +406,7 @@ fn t12_push_from_several_threads_at_once()
 #[test]
 fn t13_push_from_inside_a_running_task()
 {
-    const PARENT: usize = 200;
+    const PARENT: usize = scaled(200);
     const CHILD_PER_PARENT: usize = 5;
 
     // A task pushing more work is the normal shape of a recursive workload. The push comes from a
@@ -406,7 +436,7 @@ fn t13_push_from_inside_a_running_task()
 #[test]
 fn t14_shared_queue_grows_past_its_configured_capacity()
 {
-    const TOTAL_TASK: usize = 5_000;
+    const TOTAL_TASK: usize = scaled(5_000);
 
     // `task_capacity` is a starting size, not a hard ceiling. Pushing far past it has to keep
     // working instead of dropping tasks or blocking the caller.
@@ -430,7 +460,7 @@ fn t14_shared_queue_grows_past_its_configured_capacity()
 #[test]
 fn t15_two_pools_stay_out_of_each_others_way()
 {
-    const TOTAL_TASK: usize = 500;
+    const TOTAL_TASK: usize = scaled(500);
 
     // Each pool has its own id, and the thread-local context is keyed by that id. If the ids ever
     // collided, a worker of one pool would look up a slot in the other pool's buffer.
@@ -461,11 +491,12 @@ fn t15_two_pools_stay_out_of_each_others_way()
 #[test]
 fn t16_a_panicking_pushed_task_does_not_wedge_the_pool()
 {
-    const TOTAL_TASK: usize = 300;
+    const TOTAL_TASK: usize = scaled(300);
 
-    // `push` has no scope to carry a panic back to, so the worker that picks the bad task up
-    // unwinds and is gone for good. The rest of the pool still has to drain its work, and `Drop`
-    // still has to join without hanging on the dead thread.
+    // `push` has no scope to carry a panic back to, so the worker catches it right where the task
+    // runs and carries on. Letting it unwind instead would kill the worker thread along with every
+    // task already sitting in its local deque, and on a single core box that is the only worker
+    // there is, so the whole pool would be gone.
     let _muted = mute_panic_output();
 
     let done = Arc::new(AtomicUsize::new(0));
@@ -480,7 +511,7 @@ fn t16_a_panicking_pushed_task_does_not_wedge_the_pool()
         }));
     }
 
-    wait_until("the surviving workers drained the queue", || done.load(Ordering::Acquire) == TOTAL_TASK);
+    wait_until("the pool drained the queue around the bad task", || done.load(Ordering::Acquire) == TOTAL_TASK);
     drop(pool);
 }
 
@@ -491,7 +522,7 @@ fn t16_a_panicking_pushed_task_does_not_wedge_the_pool()
 #[test]
 fn t17_scope_runs_every_job_and_lends_out_the_stack()
 {
-    const TOTAL_JOB: usize = 2_000;
+    const TOTAL_JOB: usize = scaled(2_000);
 
     let pool = ThreadPool::new(cfg("t17", 4));
 
@@ -514,7 +545,7 @@ fn t17_scope_runs_every_job_and_lends_out_the_stack()
 #[test]
 fn t18_scope_does_not_hang_when_the_deque_is_smaller_than_the_job_count()
 {
-    const TOTAL_JOB: usize = 5_000;
+    const TOTAL_JOB: usize = scaled(5_000);
 
     // The private deque has only 2 slots. The jobs do not all fit, so the overflow has to stay on
     // the caller's stack and trickle in, rather than leaking into the shared queue.
@@ -577,7 +608,7 @@ fn t20_an_empty_scope_returns_right_away()
 fn t21_nested_scopes_from_inside_a_job()
 {
     const OUTER: usize = 16;
-    const INNER: usize = 32;
+    const INNER: usize = scaled(32);
 
     let pool = ThreadPool::new(cfg("t21", 4));
     let pool_ref = PoolRef::new(&pool);
@@ -631,7 +662,7 @@ fn t22_a_panicking_job_is_rethrown_at_the_scope()
 #[test]
 fn t23_the_pool_still_works_after_a_job_panicked()
 {
-    const TOTAL_JOB: usize = 500;
+    const TOTAL_JOB: usize = scaled(500);
 
     // A panic inside a scope is caught and carried back by the scope, so no worker thread should
     // die over it. Whatever comes next has to run on a full pool.
@@ -662,7 +693,7 @@ fn t23_the_pool_still_works_after_a_job_panicked()
 #[test]
 fn t24_a_panic_in_the_scope_closure_still_waits_for_the_jobs()
 {
-    const TOTAL_JOB: usize = 2_000;
+    const TOTAL_JOB: usize = scaled(2_000);
 
     // The closure blows up after spawning. The jobs already handed out are borrowing this stack
     // frame, so scope has to wait for every one of them before letting the unwind continue,
@@ -699,7 +730,7 @@ fn t24_a_panic_in_the_scope_closure_still_waits_for_the_jobs()
 #[test]
 fn t25_the_calling_thread_runs_jobs_while_it_waits()
 {
-    const TOTAL_JOB: usize = 2_000;
+    const TOTAL_JOB: usize = scaled(2_000);
 
     // One worker and a lot of jobs. If the caller just stood around, the number below would be 0.
     // Since it actually joins in, it has to grab a share: the single worker cannot swallow 2000
@@ -734,7 +765,7 @@ fn t25_the_calling_thread_runs_jobs_while_it_waits()
 #[test]
 fn t26_the_calling_thread_does_not_become_a_permanent_worker()
 {
-    const TOTAL_JOB: usize = 200;
+    const TOTAL_JOB: usize = scaled(200);
 
     // Once the scope is over, the caller gets its own thread back. Work pushed afterwards must not
     // run there, because the caller never returns to the job loop.
@@ -774,7 +805,7 @@ fn t26_the_calling_thread_does_not_become_a_permanent_worker()
 #[test]
 fn t27_scope_works_from_a_thread_that_did_not_build_the_pool()
 {
-    const TOTAL_JOB: usize = 1_000;
+    const TOTAL_JOB: usize = scaled(1_000);
 
     // Nothing ties `scope` to the thread that called `ThreadPool::new`. Any outsider borrows the
     // host slot for as long as it is waiting.
@@ -801,7 +832,7 @@ fn t27_scope_works_from_a_thread_that_did_not_build_the_pool()
 #[test]
 fn t28_a_scope_on_another_pool_puts_the_caller_context_back()
 {
-    const INNER_JOB: usize = 64;
+    const INNER_JOB: usize = scaled(64);
 
     // A worker of pool A opens a scope on pool B. To push into B's queues it has to pretend to be
     // B's host for a moment, then hand its own identity back. Forget the second half and that
@@ -844,8 +875,8 @@ fn t28_a_scope_on_another_pool_puts_the_caller_context_back()
 #[test]
 fn t29_scopes_run_back_to_back_on_the_same_pool()
 {
-    const ROUND: usize = 50;
-    const JOB_PER_ROUND: usize = 200;
+    const ROUND: usize = scaled(50);
+    const JOB_PER_ROUND: usize = scaled(200);
 
     // Each scope brings its own latch, and nothing about the previous one may leak into the next.
     // A stale ticket count would show up here as a hang or as an early return.

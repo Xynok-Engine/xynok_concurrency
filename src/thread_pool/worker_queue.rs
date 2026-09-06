@@ -1,6 +1,6 @@
 use crate::collection::ring_buffer::params::ParamsCasForPopBatch;
 use crate::sync::AtomicU32;
-use crate::sync::Ordering::{Acquire, Relaxed, Release};
+use crate::sync::Ordering::{AcqRel, Acquire, Relaxed, Release};
 use crate::utils::backoff::Backoff;
 use crate::utils::bits::{pack, unpack};
 use crate::utils::cache_padded::CachePadded;
@@ -110,6 +110,7 @@ impl<T> WorkerQueue<T>
             let next = pack(take_cursor, cursor_data.blocked);
 
             match self.anchor.compare_exchange_weak(current, next, Release, Acquire)
+            //match self.anchor.compare_exchange_weak(current, next, AcqRel, Acquire)
             {
                 Ok(_) => return unsafe { Some(self.buffer.take_at(take_cursor)) },
                 Err(c) =>
@@ -148,7 +149,7 @@ impl<T> WorkerQueue<T>
         let params = ParamsCasForPopBatch {
             cursor_data:           &mut my_cursor_data,
             pop_amount:            take_amount,
-            success_order:         Release,
+            success_order:         AcqRel,
             fail_order:            Acquire,
             fetch_after_cas_order: Relaxed,
         };

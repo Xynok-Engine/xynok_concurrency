@@ -11,7 +11,6 @@ pub mod queue_batching;
 pub mod slots;
 pub mod spinlock;
 pub mod steal;
-pub mod waker;
 pub mod random;
 pub mod latch;
 

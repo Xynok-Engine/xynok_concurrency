@@ -133,7 +133,7 @@ impl<T> SpmcRingBufferFifo<T>
             pop_amount:            1,
             success_order:         Release,
             fail_order:            Acquire,
-            fetch_after_cas_order: Relaxed,
+            fetch_after_cas_order: Acquire,
         };
 
         self.try_cas_for_pop_batch(params)?;
@@ -155,7 +155,7 @@ impl<T> SpmcRingBufferFifo<T>
             pop_amount:            max,
             success_order:         Release,
             fail_order:            Acquire,
-            fetch_after_cas_order: Relaxed,
+            fetch_after_cas_order: Acquire,
         };
 
         let pop_amount = match self.try_cas_for_pop_batch(params)
@@ -183,7 +183,7 @@ impl<T> SpmcRingBufferFifo<T>
             pop_amount:            dst.max_write_count,
             success_order:         Release,
             fail_order:            Acquire,
-            fetch_after_cas_order: Relaxed,
+            fetch_after_cas_order: Acquire,
         };
 
         let pop_amount = match self.try_cas_for_pop_batch(params)
@@ -272,7 +272,7 @@ impl<T> SpmcRingBufferFifo<T>
     fn cursor_data(&self) -> CursorData
     {
         let (stolen, in_progress) = self.head.load_unpack(Acquire);
-        let tail = self.tail.load(Relaxed);
+        let tail = self.tail.load(Acquire);
 
         CursorData {
             stolen:   stolen,

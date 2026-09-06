@@ -12,6 +12,7 @@ use crate::thread_pool::worker_queue::WorkerQueue;
 use crate::utils::backoff::Backoff;
 use crate::utils::random::Random;
 use crate::utils::steal::Steal;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 pub struct Worker
 {
@@ -62,7 +63,7 @@ impl Worker
     {
         if let Some(task) = self.tasks.pop()
         {
-            task.run_once();
+            run_task(task);
             return true;
         }
         false
@@ -139,12 +140,28 @@ impl Worker
     }
 }
 
+/// Runs one task and keeps a panic from escaping the worker loop.
+///
+/// A task handed to `push` has no scope to carry a panic back to, so letting it unwind would take
+/// the whole worker thread down with it, and every task already sitting in that worker's local
+/// deque would go with it. On a single core machine that is the only worker there is, so the pool
+/// would be dead for good. `scope` jobs catch their own panic and hand it back to the waiting
+/// thread, so this only ever fires for `push`.
+///
+/// The payload is dropped on purpose: the panic hook has already printed the message and the
+/// backtrace by the time unwinding starts, and there is nobody left to hand it to.
+#[inline]
+fn run_task(task: Job)
+{
+    let _ = catch_unwind(AssertUnwindSafe(move || task.run_once()));
+}
+
 fn drain_local_task(params: ParamsWorker) -> WorkerState
 {
     while let Some(task) = params.worker.tasks.pop()
     //if let Some(task) = params.worker.tasks.pop()
     {
-        task.run_once();
+        run_task(task);
     }
 
     WorkerState::Stealing(None)

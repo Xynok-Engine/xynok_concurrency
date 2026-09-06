@@ -216,8 +216,15 @@ fn t17_one_producer_many_consumers_no_loss_no_duplication()
 
     const CAP: usize = 64;
     const CONSUMERS: u32 = 4;
-    const TOTAL: u32 = 20_000;
     const CHUNK: usize = 16;
+
+    // Miri interprets the program rather than running it, so the real count would take minutes per
+    // seed. What is being checked here is how the consumers interleave, not the volume, so a much
+    // smaller run buys the same coverage.
+    #[cfg(not(miri))]
+    const TOTAL: u32 = 20_000;
+    #[cfg(miri)]
+    const TOTAL: u32 = 500;
 
     #[derive(Clone, Copy)]
     struct RawPtr(*mut SpmcRingBufferFifo<u32>);
@@ -234,7 +241,7 @@ fn t17_one_producer_many_consumers_no_loss_no_duplication()
                 let done = &done;
                 scope.spawn(move || {
                     let raw = raw; // force the closure to capture the whole `RawPtr`, not just the `.0` field
-                    let ring: &mut SpmcRingBufferFifo<u32> = unsafe { &mut *raw.0 };
+                    let ring: &SpmcRingBufferFifo<u32> = unsafe { &*raw.0 };
                     let mut out = Vec::new();
                     let mut backoff = Backoff::new();
                     loop
@@ -252,6 +259,19 @@ fn t17_one_producer_many_consumers_no_loss_no_duplication()
                         {
                             backoff.reset();
                             out.extend(chunk);
+
+                            // Hard ceiling. A single consumer can legitimately walk away with every
+                            // element, but never more than that. If the ring ever hands the same
+                            // slot out twice, this loop stops seeing an empty ring, never reaches
+                            // the `done` check, and `out` grows until it eats the machine. Bail out
+                            // here so a broken ring fails the test in a second instead of taking
+                            // the box down with it.
+                            assert!(
+                                out.len() <= TOTAL as usize,
+                                "a single consumer collected {} elements out of {} pushed: the ring is handing out duplicates",
+                                out.len(),
+                                TOTAL
+                            );
                         }
                     }
                 })
@@ -260,7 +280,7 @@ fn t17_one_producer_many_consumers_no_loss_no_duplication()
 
         let producer = scope.spawn(move || {
             let raw = raw; // same as above: force capturing the whole `RawPtr`
-            let ring: &mut SpmcRingBufferFifo<u32> = unsafe { &mut *raw.0 };
+            let ring: &SpmcRingBufferFifo<u32> = unsafe { &*raw.0 };
             let mut backoff = Backoff::new();
             for val in 0..TOTAL
             {

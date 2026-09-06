@@ -30,6 +30,10 @@ use cfg::CfgThreadPool;
 #[path = "tests/unit.rs"]
 mod unit_test;
 
+#[cfg(all(test, loom))]
+#[path = "tests/loom.rs"]
+mod loom_test;
+
 pub struct ThreadPool
 {
     cfg:     CfgThreadPool,
