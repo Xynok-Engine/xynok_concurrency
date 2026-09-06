@@ -1,8 +1,13 @@
-//! src: https://github.com/crossbeam-rs/crossbeam/blob/main/crossbeam-utils/src/backoff.rs
-
-use crate::apis::consts::{SPIN_LIMIT, YIELD_LIMIT};
 use crate::sync::spin_loop;
 use crate::sync::thread::yield_now;
+
+#[rustfmt::skip] #[cfg(not(any(loom, miri)))] pub const SPIN_LIMIT: u32 = 6; // maxmium is 2^6
+#[rustfmt::skip] #[cfg(not(any(loom, miri)))] pub const YIELD_LIMIT: u32 = 10;
+
+#[rustfmt::skip] #[cfg(any(loom, miri))] pub const SPIN_LIMIT: u32 = 0;
+#[rustfmt::skip] #[cfg(any(loom, miri))] pub const YIELD_LIMIT: u32 = 1;
+
+/// src: https://github.com/crossbeam-rs/crossbeam/blob/main/crossbeam-utils/src/backoff.rs
 pub struct Backoff
 {
     step: u32,

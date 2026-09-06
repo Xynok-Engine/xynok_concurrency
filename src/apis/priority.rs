@@ -84,9 +84,9 @@ pub fn apply(level: Level)
     struct ThreadPowerThrottlingState
     {
         version:      u32,
-        /// Bit nào trong `state_mask` là có ý nghĩa.
+        /// Indicates which bits in `state_mask` are significant.
         control_mask: u32,
-        /// Bật hay tắt từng bit đó.
+        /// Toggle each of those bits on or off.
         state_mask:   u32,
     }
 
@@ -98,12 +98,13 @@ pub fn apply(level: Level)
 
     let (priority, throttling) = match level
     {
-        // Thread frame: xin chạy trước, và **tắt** EcoQoS. Không tắt thì trên máy có core hiệu năng
-        // và core tiết kiệm điện, Windows có thể dọn cả pool xuống nhóm core chậm, và một frame
-        // budget 16 ms thì không chịu nổi chuyện đó.
+        // Thread frame: prioritizes execution and disables EcoQoS. Without this, on systems with
+        // performance and efficiency cores, Windows might migrate the entire pool to the
+        // slower cores. A 16 ms frame budget just cannot handle that.
         Level::Interactive => (THREAD_PRIORITY_ABOVE_NORMAL, 0),
-        // Thread IO: nhường đường, và bật EcoQoS. Thời gian của nó nằm trong syscall, nên chạy trên
-        // core chậm gần như không đổi gì, mà pin thì đỡ hẳn.
+        // Thread IO: yields priority and enables EcoQoS. Since most of its time is spent in
+        // syscalls, running on efficiency cores rarely impacts performance, and it significantly
+        // improves battery life.
         Level::Low => (THREAD_PRIORITY_BELOW_NORMAL, THREAD_POWER_THROTTLING_EXECUTION_SPEED),
     };
 
@@ -116,8 +117,7 @@ pub fn apply(level: Level)
     unsafe {
         let thread = GetCurrentThread();
         let _ = SetThreadPriority(thread, priority);
-        // Windows 10 1809 trở lên mới có. Bản cũ hơn trả lỗi, và bỏ qua là đúng: mất một tinh chỉnh
-        // về điện năng thì không đáng để từ chối chạy.
+        // This requires Windows 10 1809 or later. Older versions return an error, but it's fine to just ignore it. Losing out on a minor power optimization isn't worth preventing the app from running.
         let _ = SetThreadInformation(
             thread,
             THREAD_POWER_THROTTLING,
