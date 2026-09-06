@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::sync::UnsafeCell;
-use crate::sync::{AtomicBool, AtomicUsize, Ordering};
+use crate::sync::{AtomicBool, AtomicUsize, Ordering, UnsafeCell};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_ring_buffer::FixedRingBuffer;
@@ -52,7 +51,6 @@ impl<T> QueueBatching<T>
         self.cas_get()
     }
 
-    /// Thử mượn đúng một lần, đang có người giữ thì trả về `None` chứ không chờ.
     #[inline]
     pub fn try_get(&self) -> Option<QueueBatchingGuard<'_, T>>
     {
@@ -63,21 +61,14 @@ impl<T> QueueBatching<T>
         }
     }
 
-    /// Mượn hàng đợi khi đã cầm tham chiếu độc quyền: không bao giờ phải chờ ai.
-    ///
-    /// Vẫn trả về vé chứ không phải tham chiếu trần, để [`Self::len`] được cập nhật lúc thả vé
-    /// giống hệt mọi đường khác.
     #[inline]
     pub fn get_mut(&mut self) -> QueueBatchingGuard<'_, T>
     {
-        // Không ai khác cầm được `&self` trong lúc mình đang giữ `&mut self`, nên quyền chắc chắn
-        // đang rảnh và lần thử này không thể trượt.
-        debug_assert!(!self.is_locked(), "giữ `&mut self` mà quyền vẫn đang bị chiếm");
+        debug_assert!(!self.is_locked(), "Attempted to acquire exclusive access while the lock is already held");
         self.locked.store(true, Ordering::Relaxed);
         QueueBatchingGuard { queue_batching: self }
     }
 
-    /// Tháo vỏ ra, lấy lại hàng đợi bên trong.
     pub fn take(self) -> VecDeque<T>
     {
         let this = std::mem::ManuallyDrop::new(self);
@@ -93,7 +84,6 @@ impl<T> QueueBatching<T>
         self.get().push_back(val);
     }
 
-    /// Đẩy cả cụm phần tử vào trong một lần chiếm quyền.
     #[inline]
     pub fn push_batch<I>(&self, values: I)
     where I: IntoIterator<Item = T>
@@ -107,8 +97,6 @@ impl<T> QueueBatching<T>
     #[inline]
     pub fn pop(&self) -> Option<T>
     {
-        // Nhìn `len` trước để khỏi tốn một lần giành quyền lúc hàng đợi rỗng. Đọc trúng giá trị cũ
-        // cũng không sao: về tay không đúng bằng lúc đọc trúng `0` thật.
         if self.is_empty()
         {
             return None;
@@ -116,7 +104,6 @@ impl<T> QueueBatching<T>
         self.get().pop_front()
     }
 
-    /// Rút tối đa `limit` phần tử, nối thêm vào `out`, trả về số phần tử thật sự lấy được.
     pub fn pop_batch(&self, out: &mut Vec<T>, limit: usize) -> usize
     {
         if limit == 0 || self.is_empty()
@@ -136,9 +123,6 @@ impl<T> QueueBatching<T>
         self.pop_batch(out, usize::MAX)
     }
 
-    /// Rút tối đa `max` phần tử và ghi thẳng vào `dst`, bắt đầu từ ô `write_start_cursor`.
-    ///
-    /// Trả về số phần tử thật sự chuyển được, có thể ít hơn `max` nếu hàng đợi cạn trước.
     #[inline]
     pub fn drain_into_buffer(&self, max: usize, dst: &FixedRingBuffer<T>, write_start_cursor: u32) -> usize
     {
@@ -165,7 +149,6 @@ impl<T> QueueBatching<T>
         moved
     }
 
-    /// Vét sạch hàng đợi, trả về số phần tử vừa bỏ đi.
     pub fn clear(&self) -> usize
     {
         let mut elements = self.get();
@@ -177,7 +160,6 @@ impl<T> QueueBatching<T>
 
 impl<T> QueueBatching<T>
 {
-    /// Số phần tử đang chờ, đọc không cần giành quyền. Xem ghi chú ở [`Self::len`].
     #[inline]
     pub fn len(&self) -> usize
     {

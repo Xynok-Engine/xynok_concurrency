@@ -10,11 +10,6 @@ pub struct Packed
 }
 impl Packed
 {
-    /// Bản `const` cho build thường.
-    ///
-    /// Dưới loom thì không `const` được: atomic của loom mang theo cả phần ghi chép để mô hình soi
-    /// từng lần chạm, nên nó không dựng được lúc biên dịch. Hai chỗ gọi đều nằm trong hàm thường
-    /// nên mất `const` ở đây không ảnh hưởng gì.
     #[cfg(not(loom))]
     pub const fn new(a: u32, b: u32) -> Self
     {
@@ -52,11 +47,10 @@ impl Packed
         self.packed.store(val, order);
     }
 
-    /// Cộng thẳng vào từ nhớ 64 bit.
-    ///
-    /// Muốn nhích riêng nửa cao thì truyền `1 << 32`: số nhớ nếu có sẽ trôi ra khỏi u64 chứ không
-    /// lấn xuống nửa thấp. Nhích nửa thấp thì ngược lại, tràn là lấn sang nửa cao, nên chỉ dùng
-    /// được cho nửa cao.
+    /// Performs an atomic addition on a 64-bit memory location.
+    /// If you want to increment only the high 32 bits, pass `1 << 32`. Any carry will overflow out of
+    /// the u64 entirely rather than bleeding into the low 32 bits. Incrementing the low bits works differently,
+    /// as an overflow will spill into the high bits, so this method is intended only for the high 32 bits.
     #[inline]
     pub fn fetch_add(&self, val: u64, order: Ordering) -> u64
     {
@@ -69,10 +63,6 @@ impl Packed
         self.packed.compare_exchange_weak(current, new, success, fail)
     }
 
-    /// Bản `strong` của CAS: chỉ thất bại khi giá trị thật sự khác `current`.
-    ///
-    /// Dùng cho chỗ nào chỉ thử đúng một lần rồi bỏ đi, vì ở đó một cú trượt vu vơ của `weak` sẽ bị
-    /// hiểu nhầm thành có người tranh chấp. Còn nếu đằng nào cũng xoay vòng thì `weak` rẻ hơn.
     #[inline]
     pub fn compare_exchange(&self, current: u64, new: u64, success: Ordering, fail: Ordering) -> Result<u64, u64>
     {
