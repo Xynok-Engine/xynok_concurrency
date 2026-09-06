@@ -1,4 +1,4 @@
-use crate::sync::cell::UnsafeCell;
+use crate::sync::UnsafeCell;
 use std::mem::MaybeUninit;
 
 pub struct FixedBuffer<T>
@@ -36,13 +36,6 @@ impl<T> FixedBuffer<T>
     {
         self.cells.as_ptr().cast::<T>()
     }
-
-    #[inline]
-    pub fn at(&self, cursor: usize) -> &UnsafeCell<MaybeUninit<T>>
-    {
-        unsafe { self.cells.get_unchecked(cursor) }
-    }
-
     #[inline]
     pub unsafe fn write(&self, cursor: usize, val: T)
     {
@@ -69,6 +62,14 @@ impl<T> FixedBuffer<T>
     }
 }
 
+impl<T> FixedBuffer<T>
+{
+    #[inline]
+    fn at(&self, cursor: usize) -> &UnsafeCell<MaybeUninit<T>>
+    {
+        unsafe { self.cells.get_unchecked(cursor) }
+    }
+}
 #[cfg(not(loom))]
 fn allocate<T>(total_slots: usize) -> Box<[UnsafeCell<MaybeUninit<T>>]>
 {

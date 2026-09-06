@@ -1,7 +1,4 @@
-use std::marker::PhantomData;
-
 use crate::custom_type::Job;
-use crate::sync::cell::UnsafeCell;
 use crate::sync::{thread, AtomicBool, Ordering};
 use crate::thread_pool::consts::MAX_WORKER_TASK_CAPACITY;
 use crate::thread_pool::local::{next_pool_id, Context, THREAD_LOCAL_CTX};
@@ -12,8 +9,8 @@ use crate::thread_pool::worker::{Worker, WorkerSpec};
 use crate::utils::available_cores;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_buffer::FixedBuffer;
-use crate::utils::latch::Latch;
 use crate::utils::queue_batching::QueueBatching;
+use std::fmt;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use xynok_std::unsafe_ptr::HeapPtr;
 
@@ -168,6 +165,45 @@ impl ThreadPool
             (Ok(_), Some(payload)) => resume_unwind(payload),
             (Ok(value), None) => value,
         }
+    }
+}
+
+impl fmt::Debug for ThreadPool
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        f.debug_struct("ThreadPool")
+            .field("name", &self.cfg.name)
+            .field("id", &self.inner.id)
+            .field("workers", &self.handles.len())
+            .field("priority", &self.cfg.priority)
+            .field("per_worker_task_capacity", &self.cfg.per_worker_task_capacity)
+            .field("task_capacity", &self.cfg.task_capacity)
+            .field("pending_tasks", &self.inner.tasks.len())
+            .field("running", &self.inner.is_running.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+impl fmt::Display for ThreadPool
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        write!(
+            f,
+            "{}: {} workers, {:?} priority, {} pending",
+            self.cfg.name,
+            self.handles.len(),
+            self.cfg.priority,
+            self.inner.tasks.len()
+        )?;
+
+        if !self.inner.is_running.load(Ordering::Relaxed)
+        {
+            f.write_str(" (stopped)")?;
+        }
+
+        Ok(())
     }
 }
 

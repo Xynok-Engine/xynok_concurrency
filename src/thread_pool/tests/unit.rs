@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use crate::apis::priority::Priority;
 use crate::custom_type::Job;
 use crate::sync::{AtomicUsize, Ordering};
+use crate::thread_pool::local::THREAD_LOCAL_CTX;
 use crate::thread_pool::{CfgThreadPool, ThreadPool};
+use crate::utils::available_cores;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -34,8 +36,53 @@ fn wait_until(what: &str, cond: impl Fn() -> bool)
     }
 }
 
+/// Lets a reference to the pool travel inside a [`Job`], which demands `'static`.
+///
+/// Only used in this file, and every test that uses it waits for the job to finish before the
+/// pool goes away.
+#[derive(Clone, Copy)]
+struct PoolRef(*const ThreadPool);
+unsafe impl Send for PoolRef {}
+unsafe impl Sync for PoolRef {}
+impl PoolRef
+{
+    fn new(pool: &ThreadPool) -> Self
+    {
+        Self(pool as *const ThreadPool)
+    }
+
+    fn get(&self) -> &ThreadPool
+    {
+        unsafe { &*self.0 }
+    }
+}
+
+/// Silences the panic printer for the duration of a test, then hands the old one back.
+fn mute_panic_output() -> impl Drop
+{
+    struct Restore(Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>>);
+    impl Drop for Restore
+    {
+        fn drop(&mut self)
+        {
+            if let Some(hook) = self.0.take()
+            {
+                std::panic::set_hook(hook);
+            }
+        }
+    }
+
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    Restore(Some(previous))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lifecycle and `push`
+// ---------------------------------------------------------------------------------------------
+
 #[test]
-fn t0_pool_chay_het_task_da_day_vao()
+fn t0_pool_runs_every_pushed_task()
 {
     const TOTAL_TASK: usize = 2_000;
 
@@ -55,7 +102,7 @@ fn t0_pool_chay_het_task_da_day_vao()
 }
 
 #[test]
-fn t1_drop_pool_khong_treo()
+fn t1_dropping_the_pool_does_not_hang()
 {
     let done = Arc::new(AtomicUsize::new(0));
 
@@ -68,19 +115,24 @@ fn t1_drop_pool_khong_treo()
                 done.fetch_add(1, Ordering::Release);
             }));
         }
-        wait_until("chạy được ít nhất một task", || done.load(Ordering::Acquire) > 0);
+        wait_until("at least one task has run", || done.load(Ordering::Acquire) > 0);
     }
 
-    // Tới đây `Drop` đã join xong mọi worker. Không worker nào còn chạy, nên con số đứng yên.
+    // By now `Drop` has joined every worker. Nobody is left running, so the count stays put.
     let settled = done.load(Ordering::Acquire);
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(done.load(Ordering::Acquire), settled, "còn worker chạy sau khi pool đã drop");
+    assert_eq!(
+        done.load(Ordering::Acquire),
+        settled,
+        "a worker was still running after the pool had been dropped"
+    );
 }
 
 #[test]
-fn t2_drop_pool_rong_ngay_sau_khi_dung()
+fn t2_dropping_a_fresh_empty_pool()
 {
-    // Dựng rồi thả luôn, worker còn chưa kịp qua cổng khởi tạo. Vẫn phải dừng sạch.
+    // Build it and let it go straight away, before the workers even make it past the init gate.
+    // It still has to shut down cleanly.
     for _ in 0..20
     {
         let _pool = ThreadPool::new(cfg("t2", 4));
@@ -88,7 +140,7 @@ fn t2_drop_pool_rong_ngay_sau_khi_dung()
 }
 
 #[test]
-fn t3_pool_mot_worker_van_chay_duoc()
+fn t3_single_worker_pool_still_runs()
 {
     const TOTAL_TASK: usize = 500;
 
@@ -103,15 +155,15 @@ fn t3_pool_mot_worker_van_chay_duoc()
         }));
     }
 
-    wait_until("chạy hết task với đúng một worker", || done.load(Ordering::Acquire) == TOTAL_TASK);
+    wait_until("every task ran on a single worker", || done.load(Ordering::Acquire) == TOTAL_TASK);
 }
 
 #[test]
-fn t4_drop_giua_luc_worker_dang_tron_viec()
+fn t4_drop_while_the_workers_are_busy_stealing()
 {
-    // Cửa sổ nguy hiểm nhất của `Drop`: thả pool trong lúc worker vẫn đang ngó sang deque của
-    // nhau. Nếu `shutdown` thu hồi worker nào đó trước khi join hết thì chỗ này đọc phải bộ nhớ đã
-    // giải phóng. Trần cứng 200 vòng, đủ để lộ mà không chạy mãi.
+    // The nastiest window `Drop` has: releasing the pool while workers are still peeking into each
+    // other's deques. If `shutdown` reclaims a worker before every thread is joined, this is where
+    // we read freed memory. A hard cap of 200 rounds is enough to expose it without running forever.
     const ROUND: usize = 200;
     const TASK_PER_ROUND: usize = 300;
 
@@ -126,13 +178,14 @@ fn t4_drop_giua_luc_worker_dang_tron_viec()
                 done.fetch_add(1, Ordering::Release);
             }));
         }
-        // Thả ngay, không chờ. Task chưa chạy kịp thì bị bỏ, đó là hành vi mong đợi.
+        // Drop right away, no waiting. Tasks that did not get their turn are dropped, and that is
+        // the expected behaviour.
         drop(pool);
 
         let settled = done.load(Ordering::Acquire);
         assert!(
             settled <= (round + 1) * TASK_PER_ROUND,
-            "đếm được {} task ở vòng {}, nhiều hơn số đã đẩy vào",
+            "counted {} tasks on round {}, more than were ever pushed",
             settled,
             round
         );
@@ -140,18 +193,20 @@ fn t4_drop_giua_luc_worker_dang_tron_viec()
 }
 
 #[test]
-fn t5_pool_ranh_thi_di_ngu_va_goi_day_duoc()
+fn t5_idle_workers_go_to_sleep_and_can_be_woken_up()
 {
     const ROUND: usize = 20;
 
     let done = Arc::new(AtomicUsize::new(0));
     let pool = ThreadPool::new(cfg("t5", 4));
 
-    // Không có việc thì backoff phải cạn và worker phải nằm xuống, chứ không quay vòng đốt core.
-    wait_until("worker đi ngủ", || pool.inner.sleepings.len() == 4);
+    // With nothing to do, the backoff has to run out and the workers have to lie down instead of
+    // spinning and burning a core.
+    wait_until("workers fall asleep", || pool.inner.sleepings.len() == 4);
 
-    // Mỗi vòng: đẩy đúng một task vào lúc worker đang ngủ, rồi đợi nó chạy xong. Nếu `wake_one`
-    // hỏng thì mỗi vòng phải chờ hết `SLEEP_SLICE` (100ms), tức là quá 2s cho cả 20 vòng.
+    // Each round pushes exactly one task while the workers are asleep, then waits for it to finish.
+    // If `wake_one` is broken, every round has to wait out a whole `SLEEP_SLICE` (100ms), which is
+    // more than 2s across all 20 rounds.
     let started = Instant::now();
     for round in 0..ROUND
     {
@@ -159,25 +214,25 @@ fn t5_pool_ranh_thi_di_ngu_va_goi_day_duoc()
         pool.push(Job::new(move || {
             counter.fetch_add(1, Ordering::Release);
         }));
-        wait_until("task chạy sau khi gọi dậy", || done.load(Ordering::Acquire) == round + 1);
+        wait_until("the task runs after the wake-up call", || done.load(Ordering::Acquire) == round + 1);
     }
     let elapsed = started.elapsed();
 
     assert!(
         elapsed < Duration::from_secs(1),
-        "{} vòng đánh thức mất {:?}, nhiều khả năng đang chờ hết hạn giờ thay vì được gọi dậy",
+        "{} wake-ups took {:?}, which looks like waiting out the timer instead of being woken up",
         ROUND,
         elapsed
     );
 }
 
 #[test]
-fn t6_capacity_le_duoc_lam_tron_len_power_of_two()
+fn t6_odd_capacity_is_rounded_up_to_a_power_of_two()
 {
     const TOTAL_TASK: usize = 400;
 
-    // 100 không phải power of two. Trước đây chỉ có `debug_assert` chặn, nên bản release lặng lẽ
-    // tính sai mask. Giờ phải tự làm tròn lên 128 và chạy bình thường.
+    // 100 is not a power of two. It used to be guarded by a `debug_assert` only, so release builds
+    // quietly computed the wrong mask. Now it has to round itself up to 128 and just work.
     let mut cfg = cfg("t6", 4);
     cfg.per_worker_task_capacity = 100;
 
@@ -192,32 +247,257 @@ fn t6_capacity_le_duoc_lam_tron_len_power_of_two()
         }));
     }
 
-    wait_until("chạy hết task với capacity lẻ", || done.load(Ordering::Acquire) == TOTAL_TASK);
+    wait_until("every task ran with an odd capacity", || done.load(Ordering::Acquire) == TOTAL_TASK);
 }
 
-/// Cho phép mang một tham chiếu tới pool vào trong [`Job`], vốn đòi `'static`.
-///
-/// Chỉ dùng trong file này, và mọi test dùng nó đều đợi job chạy xong trước khi thả pool.
-#[derive(Clone, Copy)]
-struct PoolRef(*const ThreadPool);
-unsafe impl Send for PoolRef {}
-unsafe impl Sync for PoolRef {}
-impl PoolRef
+#[test]
+fn t7_worker_count_is_clamped_to_the_available_cores()
 {
-    fn get(&self) -> &ThreadPool
+    // Asking for a thousand workers on a machine with eight cores is a config mistake, not a
+    // request to melt the box. `workers` also holds the host slot, hence the `+ 1`.
+    let pool = ThreadPool::new(cfg("t7", 1_000));
+    assert_eq!(pool.inner.workers.len(), available_cores() + 1);
+    assert_eq!(pool.inner.host_index, available_cores());
+}
+
+#[test]
+fn t8_zero_workers_falls_back_to_one()
+{
+    const TOTAL_TASK: usize = 200;
+
+    // A pool with no worker would swallow every task without a word. One worker is the floor.
+    let pool = ThreadPool::new(cfg("t8", 0));
+    assert_eq!(pool.inner.workers.len(), 2, "expected one worker plus the host slot");
+
+    let done = Arc::new(AtomicUsize::new(0));
+    for _ in 0..TOTAL_TASK
     {
-        unsafe { &*self.0 }
+        let done = done.clone();
+        pool.push(Job::new(move || {
+            done.fetch_add(1, Ordering::Release);
+        }));
+    }
+    wait_until("the fallback worker runs everything", || done.load(Ordering::Acquire) == TOTAL_TASK);
+}
+
+#[test]
+fn t9_zero_capacity_falls_back_to_a_usable_deque()
+{
+    const TOTAL_TASK: usize = 300;
+
+    // A deque with zero slots cannot hold anything, so the config gets bumped up. Whatever the
+    // floor ends up being, stealing splits the deque in half, so it has to stay big enough for
+    // that half to be at least one slot.
+    let mut cfg = cfg("t9", 4);
+    cfg.per_worker_task_capacity = 0;
+
+    let done = Arc::new(AtomicUsize::new(0));
+    let pool = ThreadPool::new(cfg);
+
+    for _ in 0..TOTAL_TASK
+    {
+        let done = done.clone();
+        pool.push(Job::new(move || {
+            done.fetch_add(1, Ordering::Release);
+        }));
+    }
+    wait_until("every task ran with the smallest deque", || done.load(Ordering::Acquire) == TOTAL_TASK);
+}
+
+#[test]
+#[should_panic(expected = "exceeds the `u32` limit")]
+fn t10_capacity_past_the_u32_limit_is_rejected_loudly()
+{
+    // The cursors are packed into a `u32`, so a deque this big would silently wrap around. Better
+    // to refuse at construction time than to corrupt indices later.
+    let mut cfg = cfg("t10", 2);
+    cfg.per_worker_task_capacity = 1 << 31;
+    let _pool = ThreadPool::new(cfg);
+}
+
+#[test]
+fn t11_every_task_runs_exactly_once()
+{
+    const TOTAL_TASK: usize = 4_000;
+
+    // A plain counter only proves the total adds up. One slot per task also catches a task being
+    // handed out twice, which is exactly what a botched steal looks like.
+    let slots: Arc<Vec<AtomicUsize>> = Arc::new((0..TOTAL_TASK).map(|_| AtomicUsize::new(0)).collect());
+    let done = Arc::new(AtomicUsize::new(0));
+    let pool = ThreadPool::new(cfg("t11", 4));
+
+    for i in 0..TOTAL_TASK
+    {
+        let slots = slots.clone();
+        let done = done.clone();
+        pool.push(Job::new(move || {
+            slots[i].fetch_add(1, Ordering::Release);
+            done.fetch_add(1, Ordering::Release);
+        }));
+    }
+
+    wait_until("all tasks have finished", || done.load(Ordering::Acquire) == TOTAL_TASK);
+    for (i, slot) in slots.iter().enumerate()
+    {
+        assert_eq!(slot.load(Ordering::Acquire), 1, "task {} ran {} times", i, slot.load(Ordering::Acquire));
     }
 }
+
 #[test]
-fn t10_scope_chay_het_job_va_cho_muon_stack()
+fn t12_push_from_several_threads_at_once()
+{
+    const PRODUCER: usize = 4;
+    const TASK_PER_PRODUCER: usize = 500;
+
+    // The shared queue takes work from any thread, not only from the one that built the pool.
+    let pool = ThreadPool::new(cfg("t12", 4));
+    let pool_ref = PoolRef::new(&pool);
+    let done = Arc::new(AtomicUsize::new(0));
+
+    std::thread::scope(|s| {
+        for _ in 0..PRODUCER
+        {
+            let done = done.clone();
+            s.spawn(move || {
+                for _ in 0..TASK_PER_PRODUCER
+                {
+                    let done = done.clone();
+                    pool_ref.get().push(Job::new(move || {
+                        done.fetch_add(1, Ordering::Release);
+                    }));
+                }
+            });
+        }
+    });
+
+    wait_until("every producer's task has run", || done.load(Ordering::Acquire) == PRODUCER * TASK_PER_PRODUCER);
+}
+
+#[test]
+fn t13_push_from_inside_a_running_task()
+{
+    const PARENT: usize = 200;
+    const CHILD_PER_PARENT: usize = 5;
+
+    // A task pushing more work is the normal shape of a recursive workload. The push comes from a
+    // worker thread here, not from the outside, so it goes through the same queue in the other
+    // direction.
+    let pool = ThreadPool::new(cfg("t13", 4));
+    let pool_ref = PoolRef::new(&pool);
+    let done = Arc::new(AtomicUsize::new(0));
+
+    for _ in 0..PARENT
+    {
+        let done = done.clone();
+        pool.push(Job::new(move || {
+            for _ in 0..CHILD_PER_PARENT
+            {
+                let done = done.clone();
+                pool_ref.get().push(Job::new(move || {
+                    done.fetch_add(1, Ordering::Release);
+                }));
+            }
+        }));
+    }
+
+    wait_until("every child task has run", || done.load(Ordering::Acquire) == PARENT * CHILD_PER_PARENT);
+}
+
+#[test]
+fn t14_shared_queue_grows_past_its_configured_capacity()
+{
+    const TOTAL_TASK: usize = 5_000;
+
+    // `task_capacity` is a starting size, not a hard ceiling. Pushing far past it has to keep
+    // working instead of dropping tasks or blocking the caller.
+    let mut cfg = cfg("t14", 2);
+    cfg.task_capacity = 8;
+
+    let done = Arc::new(AtomicUsize::new(0));
+    let pool = ThreadPool::new(cfg);
+
+    for _ in 0..TOTAL_TASK
+    {
+        let done = done.clone();
+        pool.push(Job::new(move || {
+            done.fetch_add(1, Ordering::Release);
+        }));
+    }
+
+    wait_until("the queue grew and ran everything", || done.load(Ordering::Acquire) == TOTAL_TASK);
+}
+
+#[test]
+fn t15_two_pools_stay_out_of_each_others_way()
+{
+    const TOTAL_TASK: usize = 500;
+
+    // Each pool has its own id, and the thread-local context is keyed by that id. If the ids ever
+    // collided, a worker of one pool would look up a slot in the other pool's buffer.
+    let a = ThreadPool::new(cfg("t15a", 2));
+    let b = ThreadPool::new(cfg("t15b", 2));
+    assert_ne!(a.inner.id, b.inner.id, "two live pools ended up with the same id");
+
+    let done_a = Arc::new(AtomicUsize::new(0));
+    let done_b = Arc::new(AtomicUsize::new(0));
+
+    for _ in 0..TOTAL_TASK
+    {
+        let done_a = done_a.clone();
+        a.push(Job::new(move || {
+            done_a.fetch_add(1, Ordering::Release);
+        }));
+
+        let done_b = done_b.clone();
+        b.push(Job::new(move || {
+            done_b.fetch_add(1, Ordering::Release);
+        }));
+    }
+
+    wait_until("pool a finished", || done_a.load(Ordering::Acquire) == TOTAL_TASK);
+    wait_until("pool b finished", || done_b.load(Ordering::Acquire) == TOTAL_TASK);
+}
+
+#[test]
+fn t16_a_panicking_pushed_task_does_not_wedge_the_pool()
+{
+    const TOTAL_TASK: usize = 300;
+
+    // `push` has no scope to carry a panic back to, so the worker that picks the bad task up
+    // unwinds and is gone for good. The rest of the pool still has to drain its work, and `Drop`
+    // still has to join without hanging on the dead thread.
+    let _muted = mute_panic_output();
+
+    let done = Arc::new(AtomicUsize::new(0));
+    let pool = ThreadPool::new(cfg("t16", 4));
+
+    pool.push(Job::new(|| panic!("this task dies halfway through")));
+    for _ in 0..TOTAL_TASK
+    {
+        let done = done.clone();
+        pool.push(Job::new(move || {
+            done.fetch_add(1, Ordering::Release);
+        }));
+    }
+
+    wait_until("the surviving workers drained the queue", || done.load(Ordering::Acquire) == TOTAL_TASK);
+    drop(pool);
+}
+
+// ---------------------------------------------------------------------------------------------
+// `scope`
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn t17_scope_runs_every_job_and_lends_out_the_stack()
 {
     const TOTAL_JOB: usize = 2_000;
 
-    let pool = ThreadPool::new(cfg("t10", 4));
+    let pool = ThreadPool::new(cfg("t17", 4));
 
-    // `counter` nằm trên stack ngay đây, job mượn thẳng chứ không đi qua `Arc`. Đây là điểm khác
-    // duy nhất giữa `scope` và `push`, và cũng là lý do scope phải chờ bằng được.
+    // `counter` lives on the stack right here, and the jobs borrow it directly instead of going
+    // through an `Arc`. That is the one thing `scope` gives you over `push`, and the reason scope
+    // has to wait no matter what.
     let counter = AtomicUsize::new(0);
     pool.scope(|s| {
         for _ in 0..TOTAL_JOB
@@ -228,17 +508,17 @@ fn t10_scope_chay_het_job_va_cho_muon_stack()
         }
     });
 
-    assert!(counter.load(Ordering::Acquire) == TOTAL_JOB, "scope trả về khi job còn chưa chạy xong");
+    assert_eq!(counter.load(Ordering::Acquire), TOTAL_JOB, "scope returned while jobs were still running");
 }
 
 #[test]
-fn t11_scope_deque_be_hon_so_job_thi_van_khong_treo()
+fn t18_scope_does_not_hang_when_the_deque_is_smaller_than_the_job_count()
 {
     const TOTAL_JOB: usize = 5_000;
 
-    // Deque riêng chỉ có 2 ô. Job không nhét hết vào đó được, phần dư phải ở lại trên stack của
-    // người gọi rồi đẩy dần, chứ không được tuồn sang hàng đợi chung.
-    let mut cfg = cfg("t11", 1);
+    // The private deque has only 2 slots. The jobs do not all fit, so the overflow has to stay on
+    // the caller's stack and trickle in, rather than leaking into the shared queue.
+    let mut cfg = cfg("t18", 1);
     cfg.per_worker_task_capacity = 2;
 
     let pool = ThreadPool::new(cfg);
@@ -257,17 +537,55 @@ fn t11_scope_deque_be_hon_so_job_thi_van_khong_treo()
 }
 
 #[test]
-fn t13_scope_long_nhau_tu_trong_mot_job()
+fn t19_scope_hands_back_the_value_of_its_closure()
+{
+    let pool = ThreadPool::new(cfg("t19", 2));
+    let counter = AtomicUsize::new(0);
+
+    let answer = pool.scope(|s| {
+        for _ in 0..64
+        {
+            s.spawn(|| {
+                counter.fetch_add(1, Ordering::Release);
+            });
+        }
+        "done"
+    });
+
+    assert_eq!(answer, "done");
+    assert_eq!(counter.load(Ordering::Acquire), 64);
+}
+
+#[test]
+fn t20_an_empty_scope_returns_right_away()
+{
+    let pool = ThreadPool::new(cfg("t20", 4));
+
+    // No jobs means no tickets, so the latch is already settled. If the wait loop only checked
+    // after doing a round of work, this would sit through a whole backoff for nothing.
+    let started = Instant::now();
+    for _ in 0..100
+    {
+        pool.scope(|_s| {});
+    }
+    let elapsed = started.elapsed();
+
+    assert!(elapsed < Duration::from_secs(1), "100 empty scopes took {:?}", elapsed);
+}
+
+#[test]
+fn t21_nested_scopes_from_inside_a_job()
 {
     const OUTER: usize = 16;
     const INNER: usize = 32;
 
-    let pool = ThreadPool::new(cfg("t13", 4));
-    let pool_ref = PoolRef(&pool as *const ThreadPool);
+    let pool = ThreadPool::new(cfg("t21", 4));
+    let pool_ref = PoolRef::new(&pool);
     let counter = AtomicUsize::new(0);
 
-    // Scope trong đợi ngay trên thread worker. Nếu điểm chờ đó đi ngủ thay vì chạy giúp thì cả
-    // pool khoá cứng: mấy người ngủ chính là mấy người phải chạy nốt job mà họ đang đợi.
+    // The inner scope waits while sitting on a worker thread. If that wait point went to sleep
+    // instead of pitching in, the whole pool would deadlock: the sleepers are the very threads
+    // that owe the jobs being waited on.
     pool.scope(|outer| {
         for _ in 0..OUTER
         {
@@ -288,17 +606,16 @@ fn t13_scope_long_nhau_tu_trong_mot_job()
 }
 
 #[test]
-fn t14_panic_trong_job_duoc_nem_lai_o_scope()
+fn t22_a_panicking_job_is_rethrown_at_the_scope()
 {
-    let pool = ThreadPool::new(cfg("t14", 4));
+    let pool = ThreadPool::new(cfg("t22", 4));
     let done = AtomicUsize::new(0);
 
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    let _muted = mute_panic_output();
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         pool.scope(|s| {
-            s.spawn(|| panic!("job này chết giữa chừng"));
+            s.spawn(|| panic!("this job dies halfway through"));
             for _ in 0..100
             {
                 s.spawn(|| {
@@ -308,19 +625,86 @@ fn t14_panic_trong_job_duoc_nem_lai_o_scope()
         });
     }));
 
-    std::panic::set_hook(previous);
-    assert!(outcome.is_err(), "panic trong job bị nuốt mất, người mở scope không hề biết");
+    assert!(outcome.is_err(), "the job's panic was swallowed and the scope's owner never heard about it");
 }
 
 #[test]
-fn t16_main_thread_chay_job_trong_luc_cho_o_scope()
+fn t23_the_pool_still_works_after_a_job_panicked()
+{
+    const TOTAL_JOB: usize = 500;
+
+    // A panic inside a scope is caught and carried back by the scope, so no worker thread should
+    // die over it. Whatever comes next has to run on a full pool.
+    let pool = ThreadPool::new(cfg("t23", 4));
+
+    {
+        let _muted = mute_panic_output();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.scope(|s| {
+                s.spawn(|| panic!("boom"));
+            });
+        }));
+        assert!(outcome.is_err());
+    }
+
+    let counter = AtomicUsize::new(0);
+    pool.scope(|s| {
+        for _ in 0..TOTAL_JOB
+        {
+            s.spawn(|| {
+                counter.fetch_add(1, Ordering::Release);
+            });
+        }
+    });
+    assert_eq!(counter.load(Ordering::Acquire), TOTAL_JOB, "the pool lost a worker to the earlier panic");
+}
+
+#[test]
+fn t24_a_panic_in_the_scope_closure_still_waits_for_the_jobs()
 {
     const TOTAL_JOB: usize = 2_000;
 
-    // Một worker duy nhất, và job thì nhiều. Nếu main chỉ đứng chờ suông thì con số dưới đây bằng
-    // 0. Main tham gia thật thì nó phải bốc được một phần, vì worker kia không thể nuốt hết 2000
-    // job nhanh hơn main lấy một cái ra chạy.
-    let pool = ThreadPool::new(cfg("t16", 1));
+    // The closure blows up after spawning. The jobs already handed out are borrowing this stack
+    // frame, so scope has to wait for every one of them before letting the unwind continue,
+    // otherwise a job writes into a frame that is being torn down.
+    let pool = ThreadPool::new(cfg("t24", 4));
+    let counter = AtomicUsize::new(0);
+
+    let _muted = mute_panic_output();
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pool.scope(|s| {
+            for _ in 0..TOTAL_JOB
+            {
+                s.spawn(|| {
+                    counter.fetch_add(1, Ordering::Release);
+                });
+            }
+            panic!("the caller dies after spawning");
+        });
+    }));
+
+    assert!(outcome.is_err(), "the closure's panic never made it out of the scope");
+
+    let settled = counter.load(Ordering::Acquire);
+    assert!(settled <= TOTAL_JOB, "counted {} runs out of {} jobs", settled, TOTAL_JOB);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        counter.load(Ordering::Acquire),
+        settled,
+        "a job was still touching the borrowed frame after the scope had unwound"
+    );
+}
+
+#[test]
+fn t25_the_calling_thread_runs_jobs_while_it_waits()
+{
+    const TOTAL_JOB: usize = 2_000;
+
+    // One worker and a lot of jobs. If the caller just stood around, the number below would be 0.
+    // Since it actually joins in, it has to grab a share: the single worker cannot swallow 2000
+    // jobs faster than the caller can pull one out and run it.
+    let pool = ThreadPool::new(cfg("t25", 1));
     let main_id = std::thread::current().id();
 
     let on_main = AtomicUsize::new(0);
@@ -339,22 +723,22 @@ fn t16_main_thread_chay_job_trong_luc_cho_o_scope()
         }
     });
 
-    assert_eq!(total.load(Ordering::Acquire), TOTAL_JOB, "scope trả về mà job chưa chạy hết");
+    assert_eq!(total.load(Ordering::Acquire), TOTAL_JOB, "scope returned with jobs left to run");
     assert!(
         on_main.load(Ordering::Acquire) > 0,
-        "main đứng chờ suông trong scope, không chạy giúp job nào trong {} job",
+        "the caller waited idly inside the scope and did not run a single one of the {} jobs",
         TOTAL_JOB
     );
 }
 
 #[test]
-fn t17_main_khong_bi_bien_thanh_worker_thuong_tru()
+fn t26_the_calling_thread_does_not_become_a_permanent_worker()
 {
     const TOTAL_JOB: usize = 200;
 
-    // Ra khỏi scope là main phải trả lại quyền cho chính nó. Job đẩy vào sau đó không được phép
-    // chạy trên main, vì main có bao giờ quay lại vòng chạy job nữa đâu.
-    let pool = ThreadPool::new(cfg("t17", 2));
+    // Once the scope is over, the caller gets its own thread back. Work pushed afterwards must not
+    // run there, because the caller never returns to the job loop.
+    let pool = ThreadPool::new(cfg("t26", 2));
     let main_id = std::thread::current().id();
 
     pool.scope(|s| {
@@ -379,10 +763,105 @@ fn t17_main_khong_bi_bien_thanh_worker_thuong_tru()
         }));
     }
 
-    wait_until("worker chạy hết việc ngoài scope", || done.load(Ordering::Acquire) == TOTAL_JOB);
+    wait_until("the workers cleared the queue outside the scope", || done.load(Ordering::Acquire) == TOTAL_JOB);
     assert_eq!(
         on_main.load(Ordering::Acquire),
         0,
-        "job chạy trên main trong lúc main không hề ở trong một điểm chờ nào"
+        "a job ran on the calling thread while it was not parked at any wait point"
     );
+}
+
+#[test]
+fn t27_scope_works_from_a_thread_that_did_not_build_the_pool()
+{
+    const TOTAL_JOB: usize = 1_000;
+
+    // Nothing ties `scope` to the thread that called `ThreadPool::new`. Any outsider borrows the
+    // host slot for as long as it is waiting.
+    let pool = ThreadPool::new(cfg("t27", 4));
+    let pool_ref = PoolRef::new(&pool);
+    let counter = AtomicUsize::new(0);
+
+    std::thread::scope(|threads| {
+        threads.spawn(|| {
+            pool_ref.get().scope(|s| {
+                for _ in 0..TOTAL_JOB
+                {
+                    s.spawn(|| {
+                        counter.fetch_add(1, Ordering::Release);
+                    });
+                }
+            });
+        });
+    });
+
+    assert_eq!(counter.load(Ordering::Acquire), TOTAL_JOB);
+}
+
+#[test]
+fn t28_a_scope_on_another_pool_puts_the_caller_context_back()
+{
+    const INNER_JOB: usize = 64;
+
+    // A worker of pool A opens a scope on pool B. To push into B's queues it has to pretend to be
+    // B's host for a moment, then hand its own identity back. Forget the second half and that
+    // worker keeps looking up slots in the wrong pool for the rest of its life.
+    let a = ThreadPool::new(cfg("t28a", 2));
+    let b = ThreadPool::new(cfg("t28b", 2));
+    let b_ref = PoolRef::new(&b);
+
+    let counter = AtomicUsize::new(0);
+    let restored = AtomicUsize::new(0);
+
+    a.scope(|outer| {
+        outer.spawn(|| {
+            let before = THREAD_LOCAL_CTX.get();
+
+            b_ref.get().scope(|inner| {
+                for _ in 0..INNER_JOB
+                {
+                    inner.spawn(|| {
+                        counter.fetch_add(1, Ordering::Release);
+                    });
+                }
+            });
+
+            if THREAD_LOCAL_CTX.get() == before
+            {
+                restored.fetch_add(1, Ordering::Release);
+            }
+        });
+    });
+
+    assert_eq!(counter.load(Ordering::Acquire), INNER_JOB);
+    assert_eq!(
+        restored.load(Ordering::Acquire),
+        1,
+        "the thread kept the other pool's context after the nested scope returned"
+    );
+}
+
+#[test]
+fn t29_scopes_run_back_to_back_on_the_same_pool()
+{
+    const ROUND: usize = 50;
+    const JOB_PER_ROUND: usize = 200;
+
+    // Each scope brings its own latch, and nothing about the previous one may leak into the next.
+    // A stale ticket count would show up here as a hang or as an early return.
+    let pool = ThreadPool::new(cfg("t29", 4));
+
+    for round in 0..ROUND
+    {
+        let counter = AtomicUsize::new(0);
+        pool.scope(|s| {
+            for _ in 0..JOB_PER_ROUND
+            {
+                s.spawn(|| {
+                    counter.fetch_add(1, Ordering::Release);
+                });
+            }
+        });
+        assert_eq!(counter.load(Ordering::Acquire), JOB_PER_ROUND, "round {} came up short", round);
+    }
 }

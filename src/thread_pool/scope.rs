@@ -1,6 +1,6 @@
 use crate::custom_type::Job;
 
-use crate::sync::cell::UnsafeCell;
+use crate::sync::UnsafeCell;
 use crate::thread_pool::ThreadPoolInner;
 use crate::utils::latch::Latch;
 use std::any::Any;

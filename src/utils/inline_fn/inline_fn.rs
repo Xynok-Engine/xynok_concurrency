@@ -1,4 +1,4 @@
-use crate::sync::cell::UnsafeCell;
+use crate::sync::UnsafeCell;
 use crate::utils::inline_fn::fn_buffer::FnBuffer;
 use crate::utils::inline_fn::runnable::Runnable;
 use crate::utils::inline_fn::v_table::VTable;

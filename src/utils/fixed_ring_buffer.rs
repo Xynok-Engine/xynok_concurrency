@@ -1,5 +1,5 @@
 use crate::collection::ring_buffer::consts::MAX_CAPACITY;
-use crate::sync::cell::UnsafeCell;
+use crate::sync::UnsafeCell;
 use std::mem::MaybeUninit;
 
 pub struct FixedRingBuffer<T>

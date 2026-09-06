@@ -1,4 +1,4 @@
-use crate::sync::cell::UnsafeCell;
+use crate::sync::UnsafeCell;
 use std::mem::MaybeUninit;
 
 pub struct Slots<T>

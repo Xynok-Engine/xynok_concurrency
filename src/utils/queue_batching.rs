@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::sync::cell::UnsafeCell;
+use crate::sync::UnsafeCell;
 use crate::sync::{AtomicBool, AtomicUsize, Ordering};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;

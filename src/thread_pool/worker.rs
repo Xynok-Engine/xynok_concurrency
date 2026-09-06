@@ -158,6 +158,7 @@ fn steal(params: ParamsWorker, update_data: &mut UpdateData, last_stealing: Opti
         Some(steal_idx) => steal_from(params, update_data, steal_idx),
         None =>
         {
+            // When stealing from the root, the worker attempts to steal all available tasks to fill its own queue.
             if worker.tasks.push_batch_by_taking_from_queue(worker.tasks.capacity(), &params.root.tasks) > 0
             {
                 return WorkerState::Idle;
@@ -170,7 +171,7 @@ fn steal(params: ParamsWorker, update_data: &mut UpdateData, last_stealing: Opti
     }
 }
 
-/// Thử vét một lô từ deque của worker `steal_idx`, và chọn nước đi tiếp theo dựa trên kết quả.
+/// Attempt to steal a batch of tasks from the `steal_idx` worker's deque, and decide on the next move based on the result
 fn steal_from(params: ParamsWorker, update_data: &mut UpdateData, steal_idx: usize) -> WorkerState
 {
     let worker = params.worker;
@@ -182,8 +183,11 @@ fn steal_from(params: ParamsWorker, update_data: &mut UpdateData, steal_idx: usi
         return Stealing(None);
     }
 
+    // when stealing from another worker, we only attempt to take half of the queue
+    let batch = (worker.tasks.capacity() / 2).max(1);
+
     let other = unsafe { params.root.workers.get_at(steal_idx) };
-    match other.worker.tasks.try_steal_batch_to(worker.tasks.capacity() / 2, &worker.tasks)
+    match other.worker.tasks.try_steal_batch_to(batch, &worker.tasks)
     {
         Steal::Empty => WorkerState::Stealing(Some(next_victim_idx(steal_idx, update_data.total_worker))),
         Steal::Busy => WorkerState::Stealing(Some(steal_idx)),

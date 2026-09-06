@@ -47,20 +47,11 @@ impl<T> WorkerQueue<T>
             stolen: CachePadded::new(AtomicU32::new(0)),
         }
     }
-    #[inline]
-    pub fn buffer(&self) -> &FixedRingBuffer<T>
-    {
-        &self.buffer
-    }
+
     #[inline]
     pub fn capacity(&self) -> usize
     {
         self.buffer.capacity()
-    }
-    #[inline]
-    pub fn consumer<'a>(&'a self, dst: &'a WorkerQueue<T>) -> Consumer<'a, T>
-    {
-        Consumer::new(self, dst)
     }
 }
 impl<T> WorkerQueue<T>
@@ -246,43 +237,3 @@ impl<T> WorkerQueue<T>
         }
     }
 }
-
-pub struct Consumer<'a, T>
-{
-    src: &'a WorkerQueue<T>,
-    dst: &'a WorkerQueue<T>,
-}
-impl<'a, T> Consumer<'a, T>
-{
-    pub fn new(src: &'a WorkerQueue<T>, dst: &'a WorkerQueue<T>) -> Self
-    {
-        Self { src, dst }
-    }
-
-    /// Vét một lô từ nạn nhân sang deque của mình, kèm lý do khi lấy hụt.
-    ///
-    /// [`Steal::Empty`] là nạn nhân cạn thật, nên đi tìm chỗ khác. [`Steal::Busy`] là bị chen ngang
-    /// hoặc deque của mình hết chỗ, quay lại sau vẫn còn hàng.
-    #[inline]
-    pub fn try_steal_half(&self) -> Steal<usize>
-    {
-        let amount = self.src.buffer.capacity() / 2;
-        self.try_steal_batch(amount)
-    }
-
-    /// Như [`Self::try_steal`] nhưng tự chọn trần cho lô.
-    #[inline]
-    pub fn try_steal_batch(&self, max: usize) -> Steal<usize>
-    {
-        self.src.try_steal_batch_to(max, self.dst)
-    }
-}
-impl<T> Clone for Consumer<'_, T>
-{
-    #[inline]
-    fn clone(&self) -> Self
-    {
-        *self
-    }
-}
-impl<T> Copy for Consumer<'_, T> {}

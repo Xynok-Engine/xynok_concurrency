@@ -1,5 +1,5 @@
 use crate::custom_type::Job;
-use crate::sync::thread::{self};
+use crate::sync::thread::{self, park_timeout};
 use crate::sync::{AtomicBool, Ordering};
 use crate::thread_pool::consts::WORKER_SLEEP_DURATION;
 use crate::thread_pool::local::THREAD_LOCAL_CTX;
@@ -8,7 +8,6 @@ use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_buffer::FixedBuffer;
 use crate::utils::queue_batching::QueueBatching;
-use std::thread::park_timeout;
 
 pub struct ThreadPoolInner
 {

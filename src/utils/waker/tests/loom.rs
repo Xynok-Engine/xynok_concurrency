@@ -5,8 +5,8 @@
 //! What they cover is the *protocol*: no interleaving may lose an `unpark`, and no leftover token
 //! may open the latch early. What they cannot cover is publication, so the two suites are
 //! complementary rather than redundant.
-use crate::sync::Arc;
-use crate::sync::cell::UnsafeCell;
+use loom::sync::Arc;
+use crate::sync::UnsafeCell;
 use crate::utils::waker::Waker;
 
 /// Two workers plus the waiter is already three of `loom`'s four thread slots.
