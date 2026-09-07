@@ -175,7 +175,7 @@ fn steal(params: ParamsWorker, update_data: &mut UpdateData, last_stealing: Opti
         Some(steal_idx) => steal_from(params, update_data, steal_idx),
         None =>
         {
-            // When stealing from the root, the worker attempts to steal all available tasks to fill its own queue.
+            // when stealing from the root, the worker attempts to steal all available tasks to fill its own queue
             if worker.tasks.push_batch_by_taking_from_queue(worker.tasks.capacity(), &params.root.tasks) > 0
             {
                 return WorkerState::Idle;
@@ -188,12 +188,12 @@ fn steal(params: ParamsWorker, update_data: &mut UpdateData, last_stealing: Opti
     }
 }
 
-/// Attempt to steal a batch of tasks from the `steal_idx` worker's deque, and decide on the next move based on the result
+/// attempt to steal a batch of tasks from the `steal_idx` worker's deque, and decide on the next move based on the result
 fn steal_from(params: ParamsWorker, update_data: &mut UpdateData, steal_idx: usize) -> WorkerState
 {
     let worker = params.worker;
 
-    // If the source and destination are the same ring, the cursor state will become corrupted.
+    // if the source and destination are the same ring, the cursor state will become corrupted.
     // Revert to polling the shared queue and pick up a different task.
     if steal_idx == worker.idx
     {

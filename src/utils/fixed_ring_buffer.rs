@@ -10,23 +10,25 @@ pub struct FixedRingBuffer<T>
 
 impl<T> FixedRingBuffer<T>
 {
+    /// Panics if `capacity` is zero, is not a power of two, or is at least `MAX_CAPACITY`
     #[track_caller]
     pub fn new(capacity: usize) -> Self
     {
-        debug_assert!(
+        // Unchecked slot access and wrapping cursors require these bounds in every build
+        assert!(
             capacity > 0,
             "`{}` capacity `{}` must be greater than 0 !",
             std::any::type_name::<Self>(),
             capacity
         );
-        debug_assert!(
+        assert!(
             capacity < MAX_CAPACITY,
             "`{}` capacity `{}` exceeds `{}` limit for wrapping u32 indices",
             std::any::type_name::<Self>(),
             capacity,
             MAX_CAPACITY
         );
-        debug_assert!(
+        assert!(
             capacity.is_power_of_two(),
             "`{}` is initizealed with capacity `{}` is not power of 2 !",
             std::any::type_name::<Self>(),
