@@ -1,11 +1,11 @@
-//! ## Chỗ chứa dùng chung giữa các thread
+//! ## Containers shared between threads
 //!
-//! Những cấu trúc chứa dữ liệu mà nhiều thread cùng ra vào được, đặt riêng với phần logic của pool
-//! để dùng lại được ở chỗ khác.
+//! Data structures that several threads can move in and out of, kept apart from the pool logic so
+//! they can be reused elsewhere.
 //!
-//! ### Có gì ở đây
+//! ### What lives here
 //!
-//! Hiện mới có nhóm ring buffer: vùng nhớ cỡ cố định, chạy vòng, được thiết kế sao cho hai phía ra
-//! vào chạm vào hai đầu khác nhau và ít giẫm lên nhau nhất có thể.
+//! So far just the ring buffer family: a fixed size region of memory used as a circle, laid out so
+//! the two sides touch different ends and step on each other as little as possible.
 
 pub mod ring_buffer;

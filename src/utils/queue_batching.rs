@@ -40,7 +40,7 @@ impl<T> QueueBatching<T>
 
 impl<T> QueueBatching<T>
 {
-    /// Chờ tới khi mượn được hàng đợi bên trong.
+    /// Waits until the internal queue can be acquired
     #[inline]
     pub fn get(&self) -> QueueBatchingGuard<'_, T>
     {
@@ -132,7 +132,7 @@ impl<T> QueueBatching<T>
         }
         debug_assert!(
             max <= dst.capacity(),
-            "`{}` chỉ có `{}` ô, không chứa nổi `{}` phần tử",
+            "`{}` has only `{}` slots, which cannot hold `{}` elements",
             std::any::type_name::<FixedRingBuffer<T>>(),
             dst.capacity(),
             max

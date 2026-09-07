@@ -74,10 +74,10 @@ pub fn apply(level: Level)
     const THREAD_PRIORITY_ABOVE_NORMAL: i32 = 1;
     const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
 
-    /// `ThreadPowerThrottling` trong `THREAD_INFORMATION_CLASS`.
+    /// `ThreadPowerThrottling` in `THREAD_INFORMATION_CLASS`.
     const THREAD_POWER_THROTTLING: i32 = 4;
     const THREAD_POWER_THROTTLING_CURRENT_VERSION: u32 = 1;
-    /// Bit duy nhất hiện có: cho phép hệ điều hành hạ tốc độ thực thi của thread này.
+    /// The only bit there is right now: lets the OS throttle how fast this thread runs.
     const THREAD_POWER_THROTTLING_EXECUTION_SPEED: u32 = 0x1;
 
     #[repr(C)]

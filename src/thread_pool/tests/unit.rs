@@ -731,11 +731,26 @@ fn t24_a_panic_in_the_scope_closure_still_waits_for_the_jobs()
 fn t25_the_calling_thread_runs_jobs_while_it_waits()
 {
     const TOTAL_JOB: usize = scaled(2_000);
+    const DEQUE_CAPACITY: usize = 2;
 
-    // One worker and a lot of jobs. If the caller just stood around, the number below would be 0.
-    // Since it actually joins in, it has to grab a share: the single worker cannot swallow 2000
-    // jobs faster than the caller can pull one out and run it.
-    let pool = ThreadPool::new(cfg("t25", 1));
+    // One worker, a tiny deque, and far more jobs than fit in it. Two separate things then push
+    // work onto the caller, and the test only needs one of them to happen:
+    //
+    // - `spawn` runs the job on the spot when the deque is full, and with this many jobs against
+    //   this few slots it fills almost immediately
+    // - once the jobs are in, the caller drains alongside the worker instead of standing around
+    //
+    // The job count has to stay well above the capacity for the first of those to hold, which is
+    // why the capacity is pinned here rather than left at whatever `cfg` hands out: shrinking the
+    // job count for Miri would otherwise quietly turn this into a test that passes by luck.
+    let mut cfg = cfg("t25", 1);
+    cfg.per_worker_task_capacity = DEQUE_CAPACITY;
+    assert!(
+        TOTAL_JOB > DEQUE_CAPACITY * 4,
+        "the job count has to stay well past the deque capacity or this test proves nothing"
+    );
+
+    let pool = ThreadPool::new(cfg);
     let main_id = std::thread::current().id();
 
     let on_main = AtomicUsize::new(0);

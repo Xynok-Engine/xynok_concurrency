@@ -2,7 +2,7 @@ use crate::sync::UnsafeCell;
 use crate::utils::inline_fn::fn_buffer::FnBuffer;
 use crate::utils::inline_fn::runnable::Runnable;
 use crate::utils::inline_fn::v_table::VTable;
-use crate::utils::inline_fn::v_table_alias::VTableAlias;
+use crate::utils::inline_fn::unbound_v_table::UnboundVTable;
 use std::mem::ManuallyDrop;
 
 /// src: https://doc.rust-lang.org/std/task/struct.RawWakerVTable.html
@@ -26,6 +26,15 @@ impl InlineFn
     #[inline]
     pub fn new<F: Runnable>(f: F) -> Self
     {
+        // SAFETY: Runnable requires 'static, so the closure cannot outlive its borrows.
+        unsafe { Self::new_scoped(f) }
+    }
+
+    /// # Safety
+    /// The job must be run or dropped before anything captured by reference expires.
+    #[inline]
+    pub(crate) unsafe fn new_scoped<F: FnOnce() + Send>(f: F) -> Self
+    {
         let mut f_box = FnBuffer::new();
 
         let v_table = unsafe {
@@ -34,12 +43,12 @@ impl InlineFn
                 true =>
                 {
                     f_box.as_mut_ptr().cast::<F>().write(f);
-                    VTableAlias::<F>::INLINE
+                    UnboundVTable::<F>::INLINE
                 }
                 false =>
                 {
                     f_box.as_mut_ptr().cast::<Box<F>>().write(Box::new(f));
-                    VTableAlias::<F>::BOXED
+                    UnboundVTable::<F>::BOXED
                 }
             }
         };

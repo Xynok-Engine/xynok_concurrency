@@ -4,8 +4,14 @@
 
 This repository contains the tools, utilities, and data types that allow Xynok Engine to manage multi-threading and asynchronous tasks.
 
-In this repo, you will find various types that resemble the synchronization primitives found in rayon, tokio, smol, or crossbeam, though they are often simpler or exhibit different behaviors.
-This is because when I started this project, I had almost zero knowledge of concurrent programming, especially in Rust.
+In this repo, you will find various types that resemble the synchronization data structures used in rayon, tokio, smol, or crossbeam. These are often simpler or exhibit different behaviors to better serve the specific logic required by the engine.
+
+
+## Install
+```cargo
+[dependencies]
+xynok_concurrency = { git = "https://github.com/Xynok-Engine/xynok_concurrency.git", tag = "v0.1.75" }
+```
 
 ## Examples
 
@@ -14,7 +20,6 @@ To run an example, use the following command:
 ```bash
 cargo run --release --example <example_name>
 cargo run --release --example bench_spin      # This runs `examples/bench_spin.rs`
-cargo run --release --example frame           # A frame's worth of lane traffic, end to end
 ```
 
 ## Tests
@@ -45,6 +50,4 @@ Each run explores one fixed interleaving. To sweep several:
 ```bash
 MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo miri test --lib
 ```
-
-
 

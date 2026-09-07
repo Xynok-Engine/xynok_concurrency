@@ -1,29 +1,29 @@
-//! ## Gói một việc lại mà không đụng tới heap
+//! ## Packing up a job without touching the heap
 //!
-//! Một job trong pool này chỉ là một closure. Cách thông thường để cất closure đi rồi chạy sau là
-//! bọc nó vào một con trỏ heap, nhưng như vậy mỗi lần giao việc lại là một lần cấp phát, và lúc
-//! chạy thì phải nhảy qua một tầng con trỏ nữa mới tới được dữ liệu.
+//! A job in this pool is just a closure. The usual way to store a closure and run it later is to
+//! box it behind a heap pointer, but then every hand off is another allocation, and running it
+//! means hopping through one more pointer before reaching the data.
 //!
-//! Với những việc nhỏ và nhiều, riêng khoản chuẩn bị đó đã đắt hơn cả bản thân công việc.
+//! For small jobs that come in bulk, that setup alone costs more than the work itself.
 //!
-//! ### Cách hoạt động
+//! ### How it works
 //!
-//! Ở đây job có kích thước cố định, vừa đúng một dòng cache. Closure nào đủ nhỏ thì nằm thẳng
-//! trong đó, khỏi cấp phát và khỏi con trỏ trung gian. Closure to quá thì mới lùi về cách cũ, và
-//! chỗ gọi không cần biết nó rơi vào đường nào.
+//! Here a job has a fixed size, exactly one cache line. A closure small enough sits right inside
+//! it, with no allocation and no pointer in between. Only a closure that is too big falls back to
+//! the old way, and the call site never has to know which path it took.
 //!
-//! Vì kích thước cố định nên job xếp khít nhau trong hàng đợi và ring buffer, đọc tuần tự là đọc
-//! liền mạch chứ không phải đi lượm từng mảnh rải rác trên heap.
+//! Because the size is fixed, jobs pack tightly into the queue and the ring buffer, so reading them
+//! in order is one continuous read instead of chasing pieces scattered across the heap.
 //!
-//! ### Việc mượn dữ liệu bên ngoài
+//! ### Borrowing outside data
 //!
-//! Ngoài đường thường dành cho closure sống lâu, còn một đường cho closure mượn dữ liệu trên ngăn
-//! xếp của người giao việc. Đó là thứ mà scope cần, và nó cũng tránh được lần cấp phát mà cách bọc
-//! con trỏ bắt phải trả.
+//! Besides the usual path for closures that live on their own, there is a path for closures that
+//! borrow from the caller's stack. That is what scope needs, and it also avoids the allocation that
+//! boxing would charge.
 //!
 //! > [!IMPORTANT]
-//! > Đường mượn dữ liệu là `unsafe`, và người gọi phải tự bảo đảm job chạy xong trước khi thứ nó
-//! > mượn biến mất. Scope lo việc đó giúp, còn dùng tay trực tiếp thì phải tự lo.
+//! > The borrowing path is `unsafe`, and the caller has to guarantee the job finishes before what
+//! > it borrows goes away. Scope takes care of that for you, but doing it by hand is on you.
 
 pub mod fn_buffer;
 pub mod inline_fn;

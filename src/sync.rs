@@ -1,23 +1,23 @@
-//! ## Một lớp áo chung cho std và loom
+//! ## One shared front for std and loom
 //!
-//! Crate này được kiểm bằng loom, và loom chỉ soi được những thao tác đồng thời do chính nó cài
-//! đặt. Nghĩa là mọi biến nguyên tử, mọi ô nhớ chia sẻ, mọi thao tác thread đều phải đổi sang bản
-//! của loom khi chạy kiểm, rồi đổi ngược lại khi build thật.
+//! This crate is checked with loom, and loom can only see the concurrent operations it provides
+//! itself. That means every atomic, every shared cell, every thread operation has to switch over to
+//! loom's version during the checks, then switch back for a real build.
 //!
-//! Rải `#[cfg]` khắp nơi để làm việc đó thì code chính sẽ đầy nhiễu, và chỉ cần sót một chỗ là
-//! loom nhìn không thấy, kiểm xong vẫn tưởng là sạch.
+//! Sprinkling `#[cfg]` everywhere to do that would bury the real code in noise, and missing a
+//! single spot means loom never sees it, so the run comes back clean while the bug is still there.
 //!
-//! ### Cách hoạt động
+//! ### How it works
 //!
-//! Cả crate chỉ mượn kiểu từ đây, không mượn thẳng từ std. Chỗ này quyết định một lần duy nhất là
-//! lấy bản của ai, phần còn lại không cần biết.
+//! The whole crate pulls these types from here instead of straight from std. This is the one place
+//! that decides whose version to use, and nothing else has to care.
 //!
-//! Chỉ những thứ thật sự cần đổi bản mới có mặt ở đây. Cái gì loom không mô hình hoá, hoặc chỉ
-//! dùng để đo kích thước kiểu chứ không chạy đồng thời, thì cứ gọi thẳng std cho gọn.
+//! Only the things that genuinely need swapping live here. Anything loom does not model, or that is
+//! only used to measure a type's size rather than run concurrently, can just call std directly.
 //!
 //! > [!IMPORTANT]
-//! > Đừng mượn thẳng std cho những thứ có trong danh sách dưới đây. Một chỗ lách thôi là loom mất
-//! > dấu đúng cái đoạn cần soi nhất.
+//! > Do not reach for std directly for anything on the list below. One shortcut is enough for loom
+//! > to lose track of exactly the part that needed watching.
 
 #[cfg(not(loom))]
 pub(crate) use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -28,11 +28,11 @@ pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsiz
 #[cfg(loom)]
 pub(crate) use loom::cell::UnsafeCell;
 
-/// Ô nhớ cho phép nhiều nơi cùng nắm tham chiếu mà vẫn ghi vào được.
+/// A cell that lets several places hold a reference and still write through it.
 ///
-/// Bản của std không ghi lại gì cả, còn bản của loom ghi nhận từng lần chạm để phát hiện hai thread
-/// cùng vào một ô. Chỗ này bọc bản std lại theo đúng hình dáng của bản loom, để code gọi chỉ cần
-/// viết một kiểu duy nhất.
+/// The std version records nothing, while loom's version tracks every access so it can catch two
+/// threads landing on the same cell. This wraps the std one in the same shape as loom's, so calling
+/// code only ever writes against a single type.
 #[cfg(not(loom))]
 #[derive(Debug)]
 pub(crate) struct UnsafeCell<T>(std::cell::UnsafeCell<T>);
@@ -58,10 +58,10 @@ impl<T> UnsafeCell<T>
     }
 }
 
-/// Gợi ý cho CPU rằng đây là một vòng chờ, để nó bớt ăn tài nguyên của core anh em.
+/// Hints to the CPU that this is a spin wait, so it takes less away from the sibling cores.
 ///
-/// Dưới loom thì thành nhường lượt, vì loom cần một điểm cắt thật để thử các thứ tự khác nhau chứ
-/// không hiểu gợi ý của phần cứng.
+/// Under loom this becomes a yield, because loom needs a real cut point to try different orderings
+/// and does not understand a hardware hint.
 #[inline]
 pub(crate) fn spin_loop()
 {
@@ -80,8 +80,8 @@ pub(crate) mod thread
     #[cfg(loom)]
     pub(crate) use loom::thread::{JoinHandle, Thread, current, park, yield_now};
 
-    /// Dựng một worker và đặt tên cho nó, để lúc soi bằng debugger hay profiler còn biết ai là ai
-    /// thay vì nhìn thấy một dãy `Thread-<số>`.
+    /// Spawns a worker and gives it a name, so a debugger or profiler shows who is who instead of a
+    /// row of `Thread-<number>`.
     #[cfg(not(loom))]
     pub(crate) fn spawn_named<F>(name: String, f: F) -> std::io::Result<JoinHandle<()>>
     where F: FnOnce() + Send + 'static
@@ -89,8 +89,8 @@ pub(crate) mod thread
         std::thread::Builder::new().name(name).spawn(f)
     }
 
-    /// Thread của loom là coroutine do nó tự xếp lượt, không có tên ở tầng hệ điều hành, nên tên bị
-    /// bỏ đi. Chạy loom thì cũng chẳng có pool thật nào được dựng lên.
+    /// A loom thread is a coroutine it schedules itself, with no name at the OS level, so the name
+    /// is dropped. No real pool gets built during a loom run anyway.
     #[cfg(loom)]
     pub(crate) fn spawn_named<F>(_name: String, f: F) -> std::io::Result<JoinHandle<()>>
     where F: FnOnce() + Send + 'static
@@ -98,8 +98,8 @@ pub(crate) mod thread
         Ok(loom::thread::spawn(f))
     }
 
-    /// Loom không mô hình hoá đồng hồ, nên ngủ có hạn giờ thành nhường lượt. Chỗ duy nhất dùng nó
-    /// là vòng chờ có việc để chạy, và ở đó "tỉnh sớm" luôn hợp lệ.
+    /// Loom does not model the clock, so a timed park becomes a yield. The only place using it is
+    /// the wait loop looking for work, and waking up early is always fine there.
     #[cfg(loom)]
     pub(crate) fn park_timeout(_dur: std::time::Duration)
     {

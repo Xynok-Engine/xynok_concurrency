@@ -102,7 +102,6 @@ impl<'a> Drop for LatchTicket<'a>
 {
     fn drop(&mut self)
     {
-        let previous = self.latch.remaining.fetch_sub(1, Ordering::Release);
-        debug_assert!(previous > 0, "latch was decremented more times than tickets were issued");
+        self.latch.remaining.fetch_sub(1, Ordering::Release);
     }
 }

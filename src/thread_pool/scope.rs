@@ -5,10 +5,38 @@ use crate::thread_pool::ThreadPoolInner;
 use crate::utils::latch::Latch;
 use std::any::Any;
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use xynok_std::unsafe_ptr::HeapMut;
 
 type PanicPayload = Box<dyn Any + Send + 'static>;
+
+/// Non-owning pointer used only while the scope is draining its jobs.
+struct ScopePtr<'a>
+{
+    ptr:    *const Scope<'a>,
+    marker: PhantomData<&'a Scope<'a>>,
+}
+
+// SAFETY: Scope is Sync; the scope waits for all jobs before it is dropped.
+unsafe impl Send for ScopePtr<'_> {}
+
+impl<'a> ScopePtr<'a>
+{
+    fn new(scope: &Scope<'a>) -> Self
+    {
+        Self {
+            ptr:    scope,
+            marker: PhantomData,
+        }
+    }
+
+    /// # Safety
+    /// The pointed-to scope must still be alive and at its original address.
+    unsafe fn get(&self) -> &Scope<'a>
+    {
+        unsafe { &*self.ptr }
+    }
+}
 
 pub struct Scope<'a>
 {
@@ -87,7 +115,8 @@ impl<'a> Scope<'a>
         // make sure to initialize the ticket before moving it into the closure
         let ticket = self.latch.ticket();
 
-        let result = Job::new(move || {
+        let scope_ptr = ScopePtr::new(self);
+        let scoped = move || {
             let ticket = ticket;
 
             // If a panic occurs, we should stop all current and subsequent tasks
@@ -98,10 +127,15 @@ impl<'a> Scope<'a>
             }
             if let Err(payload) = catch_unwind(AssertUnwindSafe(f))
             {
-                self.record_panic(payload);
+                // SAFETY: the ticket keeps scope draining until this job finishes.
+                unsafe { scope_ptr.get() }.record_panic(payload);
             }
             drop(ticket);
-        });
+        };
+        // SAFETY: the ticket is acquired before enqueueing and released only after
+        // the closure finishes (or is dropped). ThreadPool::scope waits for all
+        // tickets before returning, including when its callback panics.
+        let result = unsafe { Job::new_scoped(scoped) };
         debug_assert!(size_of_val(&result) <= 64, "the job size exceeds 64 bytes");
         result
     }
