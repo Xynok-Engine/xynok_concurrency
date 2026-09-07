@@ -34,6 +34,10 @@ mod unit_test;
 #[path = "tests/loom.rs"]
 mod loom_test;
 
+#[cfg(test)]
+#[path = "tests/wakeup.rs"]
+mod wakeup_test;
+
 pub struct ThreadPool
 {
     cfg:     CfgThreadPool,
@@ -64,7 +68,7 @@ impl ThreadPool
             host_index:     host_index,
             init_completed: CachePadded::new(AtomicBool::new(false)),
             is_running:     CachePadded::new(AtomicBool::new(true)),
-            sleepings:      QueueBatching::with_capacity(total_worker - 1),
+            sleepers:       QueueBatching::with_capacity(total_worker - 1),
         });
 
         let mut handles = Vec::with_capacity(total_worker);

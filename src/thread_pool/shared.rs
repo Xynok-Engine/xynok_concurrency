@@ -1,7 +1,5 @@
 use crate::custom_type::Job;
-use crate::sync::thread::{self, park_timeout};
-use crate::sync::{AtomicBool, Ordering};
-use crate::thread_pool::consts::WORKER_SLEEP_DURATION;
+use crate::sync::{thread, AtomicBool, Ordering};
 use crate::thread_pool::local::THREAD_LOCAL_CTX;
 use crate::thread_pool::worker::WorkerSpec;
 use crate::utils::backoff::Backoff;
@@ -17,7 +15,7 @@ pub struct ThreadPoolInner
     pub host_index:     usize,
     pub init_completed: CachePadded<AtomicBool>,
     pub is_running:     CachePadded<AtomicBool>,
-    pub sleepings:      QueueBatching<usize>,
+    pub sleepers:       QueueBatching<usize>,
 }
 
 impl ThreadPoolInner
@@ -35,19 +33,10 @@ impl ThreadPoolInner
 
     pub fn run_until(&self, done: impl Fn() -> bool)
     {
-        let Some(handle) = self.current_worker()
-        else
+        let handle = match self.current_worker()
         {
-            let mut backoff = Backoff::new();
-            while !done()
-            {
-                match backoff.is_completed()
-                {
-                    true => park_timeout(WORKER_SLEEP_DURATION),
-                    false => backoff.snooze(),
-                }
-            }
-            return;
+            Some(r) => r,
+            None => panic!("`{:?}` is not belong to this thread pool !?", thread::current().name()),
         };
 
         let mut tick = 0u64;
@@ -62,15 +51,7 @@ impl ThreadPoolInner
                 continue;
             }
 
-            match backoff.is_completed()
-            {
-                true =>
-                {
-                    handle.worker.sleep();
-                    backoff.reset();
-                }
-                false => backoff.snooze(),
-            }
+            backoff.snooze();
         }
     }
 
@@ -81,9 +62,9 @@ impl ThreadPoolInner
     }
 
     /// wakes up, joins, and drops all current workers
-    pub fn shutdown(inner: &ThreadPoolInner, handles: &mut Vec<thread::JoinHandle<()>>, worker_count: usize)
+    pub fn shutdown(&self, handles: &mut Vec<thread::JoinHandle<()>>, worker_count: usize)
     {
-        inner.is_running.store(false, Ordering::Release);
+        self.is_running.store(false, Ordering::Release);
 
         for handle in handles.iter()
         {
@@ -97,17 +78,54 @@ impl ThreadPoolInner
 
         for i in 0..worker_count
         {
-            unsafe { inner.workers.drop_at(i) };
+            unsafe { self.workers.drop_at(i) };
         }
     }
-}
-
-impl ThreadPoolInner
-{
     #[inline]
-    fn wake_one(&self)
+    pub fn wake_one(&self)
     {
-        if let Some(worker_idx) = self.sleepings.pop()
+        // Always acquire the registration lock, even when the cached length is zero.
+        // A worker may still be publishing its registration while holding this lock.
+        let worker_idx = self.sleepers.get().pop();
+        if let Some(worker_idx) = worker_idx
+        {
+            let worker = unsafe { self.workers.get_at(worker_idx) };
+            worker.thread.unpark();
+        }
+    }
+
+    pub fn sleep_if_idle(&self, worker_idx: usize)
+    {
+        let mut sleepers = self.sleepers.get();
+        // Publishers enqueue before taking this same lock in wake_one(). If they
+        // already notified, we see their work; otherwise they see our registration.
+        if !self.is_running.load(Ordering::Acquire) || !self.tasks.is_empty()
+        {
+            return;
+        }
+        for i in 0..self.workers.len()
+        {
+            let worker = unsafe { self.workers.get_at(i) };
+            if !worker.worker.tasks.is_empty()
+            {
+                return;
+            }
+        }
+        sleepers.push(worker_idx);
+        drop(sleepers);
+
+        // An unpark between registration and park leaves a token for this call.
+        thread::park();
+
+        // park can also return spuriously or consume a token from another caller.
+        // Remove any registration wake_one() did not consume before registering again.
+        self.sleepers.get().retain(|idx| *idx != worker_idx);
+    }
+    #[inline]
+    pub fn wake_all(&self)
+    {
+        let mut guard = self.sleepers.get();
+        while let Some(worker_idx) = guard.pop()
         {
             let worker = unsafe { self.workers.get_at(worker_idx) };
             worker.thread.unpark();

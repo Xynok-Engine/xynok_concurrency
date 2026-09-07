@@ -1,7 +1,7 @@
 use xynok_std::unsafe_ptr::{HeapMut, HeapPtr};
 
 use crate::custom_type::Job;
-use crate::sync::thread::{park, Thread};
+use crate::sync::thread::Thread;
 use crate::sync::Ordering;
 use crate::thread_pool::local::{Context, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
@@ -106,19 +106,18 @@ impl Worker
                 WorkerState::Stealing(r) => steal(params, &mut update_data, r),
             };
 
-            // `Idle` means we just picked up a task, while `Stealing` means we came back empty-handed.
-            // The more times we come back empty-handed, the longer we wait before trying again. Once we hit the limit, we put the thread to sleep.
             match next_state
             {
+                // `Idle` means we just picked up a task, while `Stealing` means we came back empty-handed.
                 WorkerState::Idle => backoff.reset(),
 
-                // If we steal too many times, we should sleep
+                // The more times we come back empty-handed, the longer we wait before trying again. Once we hit the limit, we put the thread to sleep.
                 WorkerState::Stealing(_) => match backoff.is_completed()
                 {
                     true =>
                     {
-                        params.worker.sleep();
                         backoff.reset();
+                        params.worker.sleep();
                     }
                     false => backoff.snooze(),
                 },
@@ -128,15 +127,14 @@ impl Worker
             update_data.tick = update_data.tick.wrapping_add(1);
         }
     }
+}
 
-    pub fn sleep(&self)
+impl Worker
+{
+    #[inline]
+    fn sleep(&self)
     {
-        self.root.sleepings.push(self.idx);
-        if self.root.tasks.is_empty() && self.root.is_running.load(Ordering::Acquire)
-        {
-            // hmm, we should park instead of park, more detail at issue #6
-            park();
-        }
+        self.root.sleep_if_idle(self.idx);
     }
 }
 

@@ -10,6 +10,22 @@ use crate::utils::available_cores;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+#[test]
+fn idle_worker_runs_scoped_work_before_the_caller_starts_draining()
+{
+    let pool = ThreadPool::new(cfg("scope-wakeup", 1));
+    for _ in 0..4
+    {
+        wait_until("worker registered for sleep", || !pool.inner.sleepers.get().is_empty());
+        let (tx, rx) = std::sync::mpsc::channel();
+        pool.scope(|scope| {
+            scope.spawn(move || tx.send(std::thread::current().id()).unwrap());
+            let worker_id = rx.recv_timeout(TIMEOUT).expect("sleeping worker missed scoped work");
+            assert_ne!(worker_id, std::thread::current().id());
+        });
+    }
+}
+
 /// Shrinks the workload of a test when it is built for Miri.
 ///
 /// Miri interprets the program instead of running it, so it is a couple of hundred times slower
@@ -232,7 +248,7 @@ fn t5_idle_workers_go_to_sleep_and_can_be_woken_up()
 
     // With nothing to do, the backoff has to run out and the workers have to lie down instead of
     // spinning and burning a core.
-    wait_until("workers fall asleep", || pool.inner.sleepings.len() == 4);
+    wait_until("workers fall asleep", || pool.inner.sleepers.len() == 4);
 
     // Each round pushes exactly one task while the workers are asleep, then waits for it to finish.
     // If `wake_one` is broken, every round has to wait out a whole `SLEEP_SLICE` (100ms), which is

@@ -53,6 +53,16 @@ impl<T> WorkerQueue<T>
     {
         self.buffer.capacity()
     }
+    pub fn is_empty(&self) -> bool
+    {
+        self.len() < 1
+    }
+    #[inline]
+    pub fn len(&self) -> usize
+    {
+        let cursor_data = self.cursor_data();
+        cursor_data.filled_slots()
+    }
 }
 impl<T> WorkerQueue<T>
 {

@@ -270,6 +270,19 @@ pub struct QueueBatchingGuard<'a, T>
     queue_batching: &'a QueueBatching<T>,
 }
 
+impl<T> QueueBatchingGuard<'_, T>
+{
+    #[inline]
+    pub fn pop(&mut self) -> Option<T>
+    {
+        self.pop_front()
+    }
+    #[inline]
+    pub fn push(&mut self, val: T)
+    {
+        self.push_back(val)
+    }
+}
 unsafe impl<T: Sync> Sync for QueueBatchingGuard<'_, T> {}
 
 impl<T> Drop for QueueBatchingGuard<'_, T>

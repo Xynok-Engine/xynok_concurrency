@@ -100,12 +100,8 @@ impl<'a> Scope<'a>
 
         match handle.worker.tasks.push(job)
         {
-            Ok(()) =>
-            {}
-            Err(back) =>
-            {
-                back.run_once();
-            }
+            Ok(()) => self.root.wake_one(),
+            Err(back) => back.run_once(),
         }
     }
 
@@ -127,7 +123,7 @@ impl<'a> Scope<'a>
             }
             if let Err(payload) = catch_unwind(AssertUnwindSafe(f))
             {
-                // SAFETY: the ticket keeps scope draining until this job finishes.
+                // SAFETY: the ticket keeps scope draining until this job finishes
                 unsafe { scope_ptr.get() }.record_panic(payload);
             }
             drop(ticket);
@@ -140,6 +136,7 @@ impl<'a> Scope<'a>
         result
     }
 
+    /// records only the first panic, subsequent panics are dropped
     #[inline]
     fn record_panic(&self, payload: PanicPayload)
     {

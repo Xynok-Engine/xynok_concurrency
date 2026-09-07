@@ -1,5 +1,4 @@
-use crate::sync::UnsafeCell;
-use crate::sync::{AtomicBool, Ordering};
+use crate::sync::{AtomicBool, Ordering, UnsafeCell};
 use crate::utils::backoff::Backoff;
 use crate::utils::cache_padded::CachePadded;
 
@@ -38,7 +37,7 @@ impl<T> SpinLock<T>
         {
             return SpinGuard { lock: self };
         }
-        self.get_contended()
+        self.cas_get()
     }
 
     #[inline]
@@ -68,7 +67,7 @@ impl<T> SpinLock<T>
 impl<T> SpinLock<T>
 {
     #[cold]
-    fn get_contended(&self) -> SpinGuard<'_, T>
+    fn cas_get(&self) -> SpinGuard<'_, T>
     {
         let mut backoff = Backoff::new();
         loop
@@ -76,6 +75,11 @@ impl<T> SpinLock<T>
             if !self.is_locked() && self.try_lock_weak()
             {
                 return SpinGuard { lock: self };
+            }
+            if backoff.is_completed()
+            {
+                backoff.reset();
+                continue;
             }
             backoff.snooze();
         }
