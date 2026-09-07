@@ -1,7 +1,7 @@
 use crate::custom_type::Job;
-use crate::sync::{thread, AtomicBool, Ordering};
+use crate::sync::{AtomicBool, Ordering, thread};
 use crate::thread_pool::consts::MAX_WORKER_TASK_CAPACITY;
-use crate::thread_pool::local::{next_pool_id, Context, THREAD_LOCAL_CTX};
+use crate::thread_pool::local::{Context, THREAD_LOCAL_CTX, next_pool_id};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::scope::Scope;
 use crate::thread_pool::shared::ThreadPoolInner;
@@ -10,8 +10,9 @@ use crate::utils::available_cores;
 use crate::utils::cache_padded::CachePadded;
 use crate::utils::fixed_buffer::FixedBuffer;
 use crate::utils::queue_batching::QueueBatching;
+use crate::utils::spinlock::SpinLock;
 use std::fmt;
-use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use xynok_std::unsafe_ptr::HeapPtr;
 
 pub(crate) mod worker;
@@ -74,6 +75,7 @@ impl ThreadPool
             tasks:          QueueBatching::with_capacity(cfg.task_capacity),
             workers:        FixedBuffer::<WorkerSpec>::new(total_worker + 1),
             host_index:     host_index,
+            host_owner:     SpinLock::new(()),
             init_completed: CachePadded::new(AtomicBool::new(false)),
             is_running:     CachePadded::new(AtomicBool::new(true)),
             sleepers:       QueueBatching::with_capacity(total_worker),
@@ -139,17 +141,63 @@ impl ThreadPool
         self.inner.push_and_wake_one(task);
     }
 
+    /// Runs a complete group of jobs, borrowing data until every job has finished.
+    ///
+    /// The iterator is exhausted before any of its jobs can start. Jobs are distributed
+    /// round-robin across the caller and the background workers, starting with the caller.
+    /// A call from a worker uses the background workers only; an inactive host is not assigned
+    /// work. Once the whole group has been assigned, workers drain their own work and then steal.
+    /// Assignment balances job counts, not execution times, and does not guarantee thread affinity.
+    /// If another external caller owns the host queue, jobs are assigned to background workers
+    /// and this caller helps by stealing through a private queue.
+    ///
+    /// Unlike `scope`, iterator construction must not wait for one of these jobs to run.
+    /// If the iterator panics, its queued jobs are dropped without running. Job panics are
+    /// rethrown after the group drains, and the pool remains usable. Jobs go directly into
+    /// preallocated inboxes; publication needs no temporary heap storage. Inboxes grow only
+    /// when their configured capacity is exceeded.
+    ///
+    /// ```
+    /// use xynok_concurrency::thread_pool::ThreadPool;
+    /// use xynok_concurrency::thread_pool::cfg::CfgThreadPool;
+    /// let pool = ThreadPool::new(CfgThreadPool::new("batch", 4));
+    /// let mut values = [1, 2, 3, 4];
+    /// pool.run_batch(values.iter_mut().map(|value| move || *value *= 2));
+    /// assert_eq!(values, [2, 4, 6, 8]);
+    /// ```
+    pub fn run_batch<'scope, I, F>(&self, jobs: I)
+    where
+        I: IntoIterator<Item = F>,
+        F: FnOnce() + Send + 'scope,
+    {
+        self.scope(|scope| {
+            let jobs = jobs.into_iter().map(|job| scope.new_job(job));
+            // An external helper without the host slot assigns work to background workers.
+            let caller = self.inner.current_worker().map_or(0, |worker| worker.worker.index());
+            self.inner.publish_batch(jobs, caller);
+        });
+    }
+
     pub fn scope<'scope, R>(&self, f: impl FnOnce(&Scope<'scope>) -> R) -> R
     {
         let scope = Scope::new(self.inner.as_ref_mut());
 
-        // when the scope is draining, the caller might come from a different pool. We don't really care about that,
-        // but if it happens, we need to override the current thread context to match the caller's data. After
-        // all tasks are drained, we can set it back.
-        // we need to override the caller data here, as the scope will push the task into the caller's queue.
         let previous_ctx = THREAD_LOCAL_CTX.get();
         let is_outsider = previous_ctx.pool != self.inner.id;
-        if is_outsider
+        // Only one external caller can own the single-producer host deque. Do not wait for
+        // ownership: a nested call through another pool may already hold it on this thread.
+        let host_owner = if is_outsider { self.inner.host_owner.try_get() } else { None };
+        let helper = if is_outsider && host_owner.is_none()
+        {
+            // An unregistered caller publishes through the shared queue and helps through a
+            // private one-slot deque. It cannot leave inaccessible jobs behind after a steal.
+            Some(Worker::new(1, self.inner.as_ref_mut(), usize::MAX))
+        }
+        else
+        {
+            None
+        };
+        if host_owner.is_some()
         {
             THREAD_LOCAL_CTX.set(Context {
                 pool:  self.inner.id,
@@ -166,9 +214,14 @@ impl ThreadPool
 
         // we need to wait even if `f` panics. Letting a job continue running while its borrowed stack frame
         // is being torn down is exactly the kind of use-after-free that scopes are designed to prevent
-        self.inner.run_until(|| scope.is_completed());
+        let worker = match &helper
+        {
+            Some(worker) => worker,
+            None => &self.inner.current_worker().expect("scope must have a worker or an external helper").worker,
+        };
+        self.inner.run_until(worker, || scope.is_completed());
 
-        if is_outsider
+        if host_owner.is_some()
         {
             THREAD_LOCAL_CTX.set(previous_ctx);
         }

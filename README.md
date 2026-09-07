@@ -18,6 +18,29 @@ xynok_concurrency = { git = "https://github.com/Xynok-Engine/xynok_concurrency.g
 
 ## Examples
 
+Use `run_batch` when the complete group of independent jobs is known up front:
+
+```rust
+use xynok_concurrency::thread_pool::{cfg::CfgThreadPool, ThreadPool};
+
+let pool = ThreadPool::new(CfgThreadPool::new("frame", 4));
+let mut values = [1, 2, 3, 4];
+pool.run_batch(values.iter_mut().map(|value| move || *value *= 2));
+assert_eq!(values, [2, 4, 6, 8]);
+```
+
+The pool collects the jobs and assigns them round-robin to the caller and background workers
+before releasing the batch. Each participant runs its own work first, then steals pending work.
+Calls made from a worker distribute across the background workers, without assigning an extra
+share to an inactive caller thread. Assignment balances job counts; it does not pin jobs to threads.
+Concurrent external callers share one host slot; callers without that slot help by stealing
+while their batches are assigned to background workers.
+
+`run_batch` waits for all jobs, including when a job panics. If iteration panics before publication,
+collected jobs are dropped without running. Do not wait for a batch job from inside its iterator.
+For incremental submission where jobs may start during the callback, keep using `scope` and
+`Scope::spawn`. Batch jobs go directly into preallocated worker inboxes without temporary vectors. Inbox storage grows only when its capacity is exceeded.
+
 To run an example, use the following command:
 
 ```bash
@@ -53,4 +76,3 @@ Each run explores one fixed interleaving. To sweep several:
 ```bash
 MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo miri test --lib
 ```
-

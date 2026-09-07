@@ -106,7 +106,7 @@ impl<'a> Scope<'a>
     }
 
     #[inline]
-    fn new_job<F: FnOnce() + Send + 'a>(&self, f: F) -> Job
+    pub(super) fn new_job<F: FnOnce() + Send + 'a>(&self, f: F) -> Job
     {
         // make sure to initialize the ticket before moving it into the closure
         let ticket = self.latch.ticket();

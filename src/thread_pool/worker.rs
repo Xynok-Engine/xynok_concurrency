@@ -1,21 +1,23 @@
 use xynok_std::unsafe_ptr::{HeapMut, HeapPtr};
 
 use crate::custom_type::Job;
-use crate::sync::thread::Thread;
 use crate::sync::Ordering;
+use crate::sync::thread::Thread;
 use crate::thread_pool::local::{Context, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::shared::ThreadPoolInner;
-use crate::thread_pool::worker::WorkerState::Stealing;
 use crate::thread_pool::worker_queue::WorkerQueue;
 use crate::utils::backoff::Backoff;
-use crate::utils::random::Random;
+use crate::utils::queue_batching::QueueBatching;
 use crate::utils::steal::Steal;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 pub struct Worker
 {
     pub tasks: WorkerQueue<Job>,
+    /// Batch publishers and thieves use this synchronized queue. Only this worker may
+    /// push to its single-producer local deque above.
+    pub inbox: QueueBatching<Job>,
     idx:       usize,
     root:      HeapMut<ThreadPoolInner>,
 }
@@ -26,44 +28,80 @@ pub struct WorkerSpec
     pub worker: HeapPtr<Worker>,
 }
 
-enum WorkerState
-{
-    Idle,
-    Stealing(Option<usize>),
-}
-struct UpdateData
-{
-    total_worker: usize,
-    tick:         u64,
-}
-impl UpdateData
-{
-    pub fn new(params: &ParamsWorker) -> Self
-    {
-        Self {
-            tick:         0,
-            total_worker: params.root.workers.len(),
-        }
-    }
-}
 impl Worker
 {
     pub fn new(task_size: usize, root: HeapMut<ThreadPoolInner>, idx: usize) -> Self
     {
         Self {
             tasks: WorkerQueue::new(task_size),
+            inbox: QueueBatching::with_capacity(task_size),
             root:  root,
             idx:   idx,
         }
     }
 
+    pub fn index(&self) -> usize
+    {
+        self.idx
+    }
+
     #[inline]
     pub fn pop_and_run_a_task(&self) -> bool
     {
-        if let Some(task) = self.tasks.pop()
+        if let Some(task) = self.tasks.pop().or_else(|| self.inbox.pop())
         {
             run_task(task);
             return true;
+        }
+        false
+    }
+
+    /// Called only by this deque's owner, after its local and assigned work have run out.
+    /// Check every victim before backing off so an empty queue does not delay discovery
+    /// of work on the next worker. Rotate the starting point to avoid a fixed hot victim.
+    pub fn steal_and_run_a_task(&self, tick: usize) -> bool
+    {
+        if self.tasks.push_batch_by_taking_from_queue(self.tasks.capacity(), &self.root.tasks) > 0 && self.pop_and_run_a_task()
+        {
+            return true;
+        }
+
+        let count = self.root.workers.len();
+        let start = tick.wrapping_add(self.idx) % count;
+        for offset in 0..count
+        {
+            let index = (start + offset) % count;
+            if index == self.idx
+            {
+                continue;
+            }
+            let victim = &unsafe { self.root.workers.get_at(index) }.worker;
+            // Do not block behind a batch publisher. Drop the guard before invoking user code,
+            // which can itself publish a nested batch.
+            let assigned = if !victim.inbox.is_empty()
+            {
+                victim.inbox.try_get().and_then(|mut inbox| inbox.pop())
+            }
+            else
+            {
+                None
+            };
+            if let Some(task) = assigned
+            {
+                run_task(task);
+                return true;
+            }
+
+            let batch = victim.tasks.len().div_ceil(2).max(1);
+            if let Steal::Success(_) = victim.tasks.try_steal_batch_to(batch, &self.tasks)
+            {
+                // Another thief may take the transferred jobs before we pop. In that case
+                // keep searching; no job was lost and no foreign producer writes our deque.
+                if self.pop_and_run_a_task()
+                {
+                    return true;
+                }
+            }
         }
         false
     }
@@ -94,37 +132,24 @@ impl Worker
             index: params.worker.idx,
         });
 
-        let mut update_data = UpdateData::new(&params);
-        let mut state = WorkerState::Idle;
+        let mut tick = 0usize;
 
-        // real update lofic
         while params.root.is_running.load(Ordering::Acquire)
         {
-            let next_state = match state
+            if params.worker.pop_and_run_a_task() || params.worker.steal_and_run_a_task(tick)
             {
-                WorkerState::Idle => drain_local_task(params),
-                WorkerState::Stealing(r) => steal(params, &mut update_data, r),
-            };
-
-            match next_state
-            {
-                // `Idle` means we just picked up a task, while `Stealing` means we came back empty-handed.
-                WorkerState::Idle => backoff.reset(),
-
-                // The more times we come back empty-handed, the longer we wait before trying again. Once we hit the limit, we put the thread to sleep.
-                WorkerState::Stealing(_) => match backoff.is_completed()
-                {
-                    true =>
-                    {
-                        backoff.reset();
-                        params.worker.sleep();
-                    }
-                    false => backoff.snooze(),
-                },
+                backoff.reset();
             }
-
-            state = next_state;
-            update_data.tick = update_data.tick.wrapping_add(1);
+            else if backoff.is_completed()
+            {
+                backoff.reset();
+                params.worker.sleep();
+            }
+            else
+            {
+                backoff.snooze();
+            }
+            tick = tick.wrapping_add(1);
         }
     }
 }
@@ -152,65 +177,4 @@ impl Worker
 fn run_task(task: Job)
 {
     let _ = catch_unwind(AssertUnwindSafe(move || task.run_once()));
-}
-
-fn drain_local_task(params: ParamsWorker) -> WorkerState
-{
-    while let Some(task) = params.worker.tasks.pop()
-    //if let Some(task) = params.worker.tasks.pop()
-    {
-        run_task(task);
-    }
-
-    WorkerState::Stealing(None)
-}
-fn steal(params: ParamsWorker, update_data: &mut UpdateData, last_stealing: Option<usize>) -> WorkerState
-{
-    let worker = params.worker;
-
-    match last_stealing
-    {
-        Some(steal_idx) => steal_from(params, update_data, steal_idx),
-        None =>
-        {
-            // when stealing from the root, the worker attempts to steal all available tasks to fill its own queue
-            if worker.tasks.push_batch_by_taking_from_queue(worker.tasks.capacity(), &params.root.tasks) > 0
-            {
-                return WorkerState::Idle;
-            }
-
-            let mut rnd = Random::new(update_data.tick ^ worker.idx as u64);
-            let steal_idx = rnd.below(update_data.total_worker as u64) as usize;
-            steal_from(params, update_data, steal_idx)
-        }
-    }
-}
-
-/// attempt to steal a batch of tasks from the `steal_idx` worker's deque, and decide on the next move based on the result
-fn steal_from(params: ParamsWorker, update_data: &mut UpdateData, steal_idx: usize) -> WorkerState
-{
-    let worker = params.worker;
-
-    // if the source and destination are the same ring, the cursor state will become corrupted.
-    // Revert to polling the shared queue and pick up a different task.
-    if steal_idx == worker.idx
-    {
-        return Stealing(None);
-    }
-
-    // when stealing from another worker, we only attempt to take half of the queue
-    let batch = (worker.tasks.capacity() / 2).max(1);
-
-    let other = unsafe { params.root.workers.get_at(steal_idx) };
-    match other.worker.tasks.try_steal_batch_to(batch, &worker.tasks)
-    {
-        Steal::Empty => WorkerState::Stealing(Some(next_victim_idx(steal_idx, update_data.total_worker))),
-        Steal::Busy => WorkerState::Stealing(Some(steal_idx)),
-        Steal::Success(_) => WorkerState::Idle,
-    }
-}
-#[inline]
-fn next_victim_idx(now: usize, max: usize) -> usize
-{
-    (now + 1) % max
 }

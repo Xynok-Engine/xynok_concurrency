@@ -927,3 +927,193 @@ fn t29_scopes_run_back_to_back_on_the_same_pool()
         assert_eq!(counter.load(Ordering::Acquire), JOB_PER_ROUND, "round {} came up short", round);
     }
 }
+
+#[test]
+fn batch_borrows_mutable_data_and_runs_each_job_once()
+{
+    let pool = ThreadPool::new(cfg("batch-small-queues", 4).with_capacity(1, 1));
+    for count in [0, 1, 3, 7, scaled(1025)]
+    {
+        let mut values = vec![0usize; count];
+        for _ in 0..3
+        {
+            pool.run_batch(values.iter_mut().map(|value| move || *value += 1));
+        }
+        assert!(values.iter().all(|value| *value == 3));
+    }
+}
+
+#[test]
+fn batch_finishes_collecting_before_any_job_starts()
+{
+    let pool = ThreadPool::new(cfg("batch-collect", 4));
+    let collected = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
+    let jobs = (0..17).map(|_| {
+        collected.fetch_add(1, Ordering::Release);
+        // Give a premature publication plenty of opportunity to run.
+        std::thread::yield_now();
+        || {
+            assert_eq!(collected.load(Ordering::Acquire), 17);
+            completed.fetch_add(1, Ordering::Release);
+        }
+    });
+    pool.run_batch(jobs);
+    assert_eq!(completed.load(Ordering::Acquire), 17);
+}
+
+#[test]
+fn batch_iterator_panic_drops_collected_jobs_without_running_them()
+{
+    struct OnDrop<'a>(&'a AtomicUsize);
+    impl Drop for OnDrop<'_>
+    {
+        fn drop(&mut self)
+        {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+    let pool = ThreadPool::new(cfg("batch-iterator-panic", 2));
+    let dropped = AtomicUsize::new(0);
+    let ran = AtomicUsize::new(0);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pool.run_batch((0..8).map(|index| {
+            assert_ne!(index, 5, "iterator failed");
+            let guard = OnDrop(&dropped);
+            let ran = &ran;
+            move || {
+                ran.fetch_add(1, Ordering::Release);
+                drop(guard);
+            }
+        }));
+    }));
+    assert!(outcome.is_err());
+    assert_eq!(ran.load(Ordering::Acquire), 0);
+    assert_eq!(dropped.load(Ordering::Acquire), 5);
+    pool.run_batch([|| {}]);
+}
+
+#[test]
+fn batch_job_panic_drains_borrowed_jobs_and_restores_context()
+{
+    let pool = ThreadPool::new(cfg("batch-job-panic", 2));
+    let finished = AtomicUsize::new(0);
+    let before = THREAD_LOCAL_CTX.get();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pool.run_batch((0..17).map(|index| {
+            let finished = &finished;
+            move || {
+                assert_ne!(index, 3, "batch job failed");
+                finished.fetch_add(1, Ordering::Release);
+            }
+        }));
+    }));
+    assert!(outcome.is_err());
+    assert_eq!(finished.load(Ordering::Acquire), 16);
+    assert_eq!(THREAD_LOCAL_CTX.get(), before);
+    pool.run_batch([|| {
+        finished.fetch_add(1, Ordering::Release);
+    }]);
+    assert_eq!(finished.load(Ordering::Acquire), 17);
+}
+
+#[test]
+fn batch_nests_from_workers_and_inside_scopes()
+{
+    let pool = ThreadPool::new(cfg("batch-nested", 2).with_capacity(1, 1));
+    let pool_ref = PoolRef::new(&pool);
+    let completed = AtomicUsize::new(0);
+    pool.scope(|scope| {
+        for _ in 0..5
+        {
+            scope.spawn(|| {
+                let before = THREAD_LOCAL_CTX.get();
+                pool_ref.get().run_batch((0..7).map(|_| {
+                    || {
+                        pool_ref.get().run_batch((0..3).map(|_| {
+                            || {
+                                completed.fetch_add(1, Ordering::Release);
+                            }
+                        }));
+                    }
+                }));
+                assert_eq!(THREAD_LOCAL_CTX.get(), before);
+            });
+        }
+    });
+    assert_eq!(completed.load(Ordering::Acquire), 5 * 7 * 3);
+}
+
+#[test]
+fn batch_wakes_assigned_worker_while_caller_is_busy()
+{
+    let pool = ThreadPool::new(cfg("batch-wakeup", 1));
+    for _ in 0..4
+    {
+        wait_until("batch worker parked", || !pool.inner.sleepers.get().is_empty());
+        let completed = AtomicUsize::new(0);
+        pool.run_batch((0..2).map(|_| {
+            || {
+                completed.fetch_add(1, Ordering::Release);
+                wait_until("both assigned jobs started", || completed.load(Ordering::Acquire) == 2);
+            }
+        }));
+        assert_eq!(completed.load(Ordering::Acquire), 2);
+    }
+}
+
+#[test]
+fn concurrent_external_batches_and_scopes_do_not_share_a_producer()
+{
+    let pool = ThreadPool::new(cfg("batch-callers", 2).with_capacity(2, 2));
+    let pool_ref = PoolRef::new(&pool);
+    let ready = std::sync::Barrier::new(4);
+    let completed = AtomicUsize::new(0);
+    std::thread::scope(|threads| {
+        for _ in 0..4
+        {
+            let ready = &ready;
+            let completed = &completed;
+            threads.spawn(move || {
+                let before = THREAD_LOCAL_CTX.get();
+                pool_ref.get().scope(|scope| {
+                    // Every caller must enter its callback even while another owns the host.
+                    ready.wait();
+                    for _ in 0..7
+                    {
+                        scope.spawn(|| {
+                            completed.fetch_add(1, Ordering::Release);
+                        });
+                    }
+                    pool_ref.get().run_batch((0..11).map(|_| {
+                        || {
+                            completed.fetch_add(1, Ordering::Release);
+                        }
+                    }));
+                });
+                assert_eq!(THREAD_LOCAL_CTX.get(), before);
+            });
+        }
+    });
+    assert_eq!(completed.load(Ordering::Acquire), 4 * (7 + 11));
+}
+
+#[test]
+fn batch_can_reenter_a_pool_through_another_pool()
+{
+    let a = ThreadPool::new(cfg("batch-reenter-a", 1));
+    let b = ThreadPool::new(cfg("batch-reenter-b", 1));
+    let completed = AtomicUsize::new(0);
+    // Both host slots are held on this thread when A is entered again. Blocking on
+    // A's host lock would deadlock instead of using an external helper.
+    a.scope(|_| {
+        b.scope(|_| {
+            let before = THREAD_LOCAL_CTX.get();
+            a.run_batch([|| {
+                completed.fetch_add(1, Ordering::Release);
+            }]);
+            assert_eq!(THREAD_LOCAL_CTX.get(), before);
+        });
+    });
+    assert_eq!(completed.load(Ordering::Acquire), 1);
+}
