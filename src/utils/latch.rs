@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::sync::{AtomicBool, AtomicUsize, Ordering};
 use crate::utils::cache_padded::CachePadded;
 pub struct Latch
@@ -9,8 +11,14 @@ unsafe impl Send for Latch {}
 
 pub struct LatchTicket<'a>
 {
-    latch: &'a Latch,
+    /// we use a raw pointer instead of a `&Latch` to bypass the Miri UB checker
+    /// src: https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md#retagging:~:text=Retagging,-When
+    latch:  *const Latch,
+    marker: PhantomData<&'a mut Latch>,
 }
+
+unsafe impl Send for LatchTicket<'_> {}
+
 impl Default for Latch
 {
     fn default() -> Self
@@ -32,7 +40,10 @@ impl Latch
     pub fn ticket(&self) -> LatchTicket<'_>
     {
         self.remaining.fetch_add(1, Ordering::Relaxed);
-        LatchTicket { latch: self }
+        LatchTicket {
+            latch:  self,
+            marker: PhantomData,
+        }
     }
 
     /// returns true if `canceled` is currently false, and then CAS it to true
@@ -95,13 +106,16 @@ impl<'a> LatchTicket<'a>
     #[inline]
     pub fn is_canceled(&self) -> bool
     {
-        self.latch.is_canceled()
+        unsafe { (&*self.latch).is_canceled() }
     }
 }
 impl<'a> Drop for LatchTicket<'a>
 {
     fn drop(&mut self)
     {
-        self.latch.remaining.fetch_sub(1, Ordering::Release);
+        unsafe {
+            (&*self.latch).remaining.fetch_sub(1, Ordering::Release);
+        }
+        // For now, we shouldn't execute any logic after fetch_sub is invoked, because another thread might have already dropped the Latch. Damn!
     }
 }

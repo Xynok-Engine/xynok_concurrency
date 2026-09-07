@@ -68,7 +68,8 @@ impl ThreadPool
             host_index:     host_index,
             init_completed: CachePadded::new(AtomicBool::new(false)),
             is_running:     CachePadded::new(AtomicBool::new(true)),
-            sleepers:       QueueBatching::with_capacity(total_worker - 1),
+            sleepers:       QueueBatching::with_capacity(total_worker),
+            total_worker:   total_worker,
         });
 
         let mut handles = Vec::with_capacity(total_worker);

@@ -25,6 +25,7 @@ impl<T> FixedBuffer<T>
     {
         self.len() < 1
     }
+
     #[inline]
     pub fn len(&self) -> usize
     {

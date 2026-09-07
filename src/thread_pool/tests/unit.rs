@@ -248,7 +248,7 @@ fn t5_idle_workers_go_to_sleep_and_can_be_woken_up()
 
     // With nothing to do, the backoff has to run out and the workers have to lie down instead of
     // spinning and burning a core.
-    wait_until("workers fall asleep", || pool.inner.sleepers.len() == 4);
+    wait_until("workers fall asleep", || pool.inner.sleepers.len() == pool.inner.total_worker());
 
     // Each round pushes exactly one task while the workers are asleep, then waits for it to finish.
     // If `wake_one` is broken, every round has to wait out a whole `SLEEP_SLICE` (100ms), which is

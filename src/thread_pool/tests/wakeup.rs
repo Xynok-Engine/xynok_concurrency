@@ -1,6 +1,6 @@
 //! Exercise the real sleep/wake protocol without the scheduler's unbounded stealing loop.
 use crate::custom_type::Job;
-use crate::sync::{AtomicBool, Ordering, thread};
+use crate::sync::{thread, AtomicBool, Ordering};
 use crate::thread_pool::shared::ThreadPoolInner;
 use crate::thread_pool::worker::{Worker, WorkerSpec};
 use crate::utils::cache_padded::CachePadded;
@@ -30,6 +30,7 @@ impl Fixture
             init_completed: CachePadded::new(AtomicBool::new(true)),
             is_running:     CachePadded::new(AtomicBool::new(true)),
             sleepers:       QueueBatching::new(),
+            total_worker:   2,
         });
         // The model's calling thread is worker 0; queue 1 represents the host.
         for i in 0..2

@@ -16,6 +16,7 @@ pub struct ThreadPoolInner
     pub init_completed: CachePadded<AtomicBool>,
     pub is_running:     CachePadded<AtomicBool>,
     pub sleepers:       QueueBatching<usize>,
+    pub total_worker:   usize,
 }
 
 impl ThreadPoolInner
@@ -30,7 +31,11 @@ impl ThreadPoolInner
         }
         None
     }
-
+    #[inline]
+    pub fn total_worker(&self) -> usize
+    {
+        self.total_worker
+    }
     pub fn run_until(&self, done: impl Fn() -> bool)
     {
         let handle = match self.current_worker()

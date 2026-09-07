@@ -5,7 +5,7 @@ use crate::utils::latch::Latch;
 use crate::utils::spinlock::SpinLock;
 use std::any::Any;
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use xynok_std::unsafe_ptr::HeapMut;
 
 type PanicPayload = Box<dyn Any + Send + 'static>;
@@ -140,8 +140,8 @@ impl<'a> Scope<'a>
     #[inline]
     fn record_panic(&self, payload: PanicPayload)
     {
-        let mut guard = self.panic.get();
-        if guard.is_none()
+        if let Some(mut guard) = self.panic.try_get()
+            && guard.is_none()
         {
             *guard = Some(payload);
         }
