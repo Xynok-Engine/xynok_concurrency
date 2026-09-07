@@ -1,9 +1,8 @@
 use xynok_std::unsafe_ptr::{HeapMut, HeapPtr};
 
 use crate::custom_type::Job;
-use crate::sync::thread::{park_timeout, Thread};
+use crate::sync::thread::{park, Thread};
 use crate::sync::Ordering;
-use crate::thread_pool::consts::WORKER_SLEEP_DURATION;
 use crate::thread_pool::local::{Context, THREAD_LOCAL_CTX};
 use crate::thread_pool::params::ParamsWorker;
 use crate::thread_pool::shared::ThreadPoolInner;
@@ -135,7 +134,8 @@ impl Worker
         self.root.sleepings.push(self.idx);
         if self.root.tasks.is_empty() && self.root.is_running.load(Ordering::Acquire)
         {
-            park_timeout(WORKER_SLEEP_DURATION);
+            // hmm, we should park instead of park, more detail at issue #6
+            park();
         }
     }
 }
