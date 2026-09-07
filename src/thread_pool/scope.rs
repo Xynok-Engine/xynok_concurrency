@@ -1,11 +1,11 @@
 use crate::custom_type::Job;
 
-use crate::sync::UnsafeCell;
 use crate::thread_pool::ThreadPoolInner;
 use crate::utils::latch::Latch;
+use crate::utils::spinlock::SpinLock;
 use std::any::Any;
 use std::marker::PhantomData;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use xynok_std::unsafe_ptr::HeapMut;
 
 type PanicPayload = Box<dyn Any + Send + 'static>;
@@ -43,7 +43,7 @@ pub struct Scope<'a>
     root:   HeapMut<ThreadPoolInner>,
     latch:  Latch,
     marker: PhantomData<&'a mut &'a ()>,
-    panic:  UnsafeCell<Option<PanicPayload>>,
+    panic:  SpinLock<Option<PanicPayload>>,
 }
 
 unsafe impl Sync for Scope<'_> {}
@@ -57,7 +57,7 @@ impl<'a> Scope<'a>
             root:   r,
             latch:  Latch::new(),
             marker: PhantomData,
-            panic:  UnsafeCell::new(None),
+            panic:  SpinLock::new(None),
         }
     }
     #[inline]
@@ -73,7 +73,7 @@ impl<'a> Scope<'a>
     #[inline]
     pub(crate) fn take_panic(&self) -> Option<PanicPayload>
     {
-        self.panic.with_mut(|p| unsafe { (*p).take() })
+        self.panic.get().take()
     }
 }
 impl<'a> Scope<'a>
@@ -143,6 +143,10 @@ impl<'a> Scope<'a>
     #[inline]
     fn record_panic(&self, payload: PanicPayload)
     {
-        self.panic.with_mut(|slot| unsafe { *slot = Some(payload) });
+        let mut guard = self.panic.get();
+        if guard.is_none()
+        {
+            *guard = Some(payload);
+        }
     }
 }
