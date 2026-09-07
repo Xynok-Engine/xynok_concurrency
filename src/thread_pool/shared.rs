@@ -1,3 +1,4 @@
+#![allow(unused)]
 use crate::custom_type::Job;
 use crate::sync::{thread, AtomicBool, Ordering};
 use crate::thread_pool::local::THREAD_LOCAL_CTX;
@@ -59,8 +60,12 @@ impl ThreadPoolInner
             backoff.snooze();
         }
     }
-
-    pub fn push(&self, task: Job)
+    #[inline]
+    pub fn push_no_wake(&self, task: Job)
+    {
+        self.tasks.push(task);
+    }
+    pub fn push_and_wake_one(&self, task: Job)
     {
         self.tasks.push(task);
         self.wake_one();

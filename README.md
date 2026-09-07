@@ -2,10 +2,13 @@
 
 [![discord invite link](https://img.shields.io/discord/1495504680711880714?logo=discord)](https://discord.gg/a2qzfrFzWT)
 
+## Preface
 This repository contains the tools, utilities, and data types that allow Xynok Engine to manage multi-threading and asynchronous tasks.
 
-In this repo, you will find various types that resemble the synchronization data structures used in rayon, tokio, smol, or crossbeam. These are often simpler or exhibit different behaviors to better serve the specific logic required by the engine.
+In this repo, you will find various types that resemble the synchronization data structures used in [rayon](https://github.com/rayon-rs/rayon), [tokio](https://github.com/tokio-rs/tokio), [smol](https://github.com/smol-rs/smol), or [crossbeam](https://github.com/crossbeam-rs/crossbeam). 
+These are often simpler or exhibit different behaviors to better serve the specific logic required by the engine.
 
+## Overview
 
 ## Install
 ```cargo
@@ -19,7 +22,7 @@ To run an example, use the following command:
 
 ```bash
 cargo run --release --example <example_name>
-cargo run --release --example bench_spin      # This runs `examples/bench_spin.rs`
+cargo run --release --example ring_buffer      # This runs `examples/ring_buffer.rs`
 ```
 
 ## Tests

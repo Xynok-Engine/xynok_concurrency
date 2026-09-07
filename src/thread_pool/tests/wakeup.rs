@@ -68,7 +68,7 @@ fn shared_publish_races_with_sleep_registration()
         let fixture = Fixture::new();
         let root = fixture.0.as_ref_mut();
         let publisher = thread::spawn_named("publish".into(), move || {
-            root.push(Job::new(|| {}));
+            root.push_and_wake_one(Job::new(|| {}));
         })
         .unwrap();
         fixture.0.sleep_if_idle(0);

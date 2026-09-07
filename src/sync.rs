@@ -75,10 +75,10 @@ pub(crate) fn spin_loop()
 pub(crate) mod thread
 {
     #[cfg(not(loom))]
-    pub(crate) use std::thread::{JoinHandle, Thread, current, park, park_timeout, yield_now};
+    pub(crate) use std::thread::{current, park, yield_now, JoinHandle, Thread};
 
     #[cfg(loom)]
-    pub(crate) use loom::thread::{JoinHandle, Thread, current, park, yield_now};
+    pub(crate) use loom::thread::{current, park, yield_now, JoinHandle, Thread};
 
     /// Spawns a worker and gives it a name, so a debugger or profiler shows who is who instead of a
     /// row of `Thread-<number>`.

@@ -46,6 +46,14 @@ pub struct ThreadPool
 }
 impl ThreadPool
 {
+    /// Currently, when initializing a ThreadPool, the number of workers we push is the number of threads created, not the total number of threads running in the program.
+    /// This is because we do not include the main thread, which is the thread that performs the initial setup.
+    /// In reality, the main thread still participates in sharing and processing tasks, but it is not categorized as a worker.
+    /// It still utilizes worker mechanisms, yet it is not a newly created thread. Therefore, when we call
+    /// methods like ThreadPool.TotalWorker, it returns the number of additional threads created rather than including the main thread.
+    /// Essentially, in every current scenario, we always have at least two threads running.
+    /// Even in the worst-case scenario, or with the lowest number of workers, the program is actually running two threads:
+    /// the main thread and one additional worker thread, even if you pass 0 or 1 as the input.
     #[track_caller]
     pub fn new(cfg: CfgThreadPool) -> Self
     {
@@ -128,7 +136,7 @@ impl ThreadPool
 
     pub fn push(&self, task: Job)
     {
-        self.inner.push(task);
+        self.inner.push_and_wake_one(task);
     }
 
     pub fn scope<'scope, R>(&self, f: impl FnOnce(&Scope<'scope>) -> R) -> R

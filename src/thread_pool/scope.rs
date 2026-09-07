@@ -94,7 +94,7 @@ impl<'a> Scope<'a>
         let Some(handle) = self.root.current_worker()
         else
         {
-            self.root.push(job);
+            self.root.push_and_wake_one(job);
             return;
         };
 
