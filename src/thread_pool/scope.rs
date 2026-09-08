@@ -101,7 +101,10 @@ impl<'a> Scope<'a>
         match handle.worker.tasks.push(job)
         {
             Ok(()) => self.root.wake_one(),
-            Err(back) => back.run_once(),
+            // The local queue is full: overflow to the shared queue instead of running inline,
+            // so the producer stays free and any idle worker (steal_and_run_a_task checks this
+            // queue first) can pick the job up.
+            Err(back) => self.root.push_and_wake_one(back),
         }
     }
 

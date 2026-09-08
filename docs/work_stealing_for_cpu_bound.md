@@ -18,12 +18,15 @@ An Entity Component System (ECS) typically relies on a scheduler to manage the e
 *   **Sequential Systems:** If you have a sequence of systems (e.g., A, B, and C), the main thread executes them one after another. No complex work stealing is required here.
 *   **Parallel System Groups:** When a system contains a group of sub-systems that can run in parallel, we utilize a thread pool. The scheduler distributes these sub-tasks among the available worker threads.
 
+Each parallel group runs inside its own `scope`, and the scheduler blocks on that scope before moving to the next step. That means the shared queue never holds more than one step's worth of work at a time. Systems within a group are checked against each other for conflicting query access at the moment the group is registered (`add_system_parallel`), not at run time, so nothing inside a single group ever needs to wait on another job in the same group.
+
 ## The Stealing Priority
 
 When a worker thread finishes its assigned tasks, it must decide where to look for more work. The priority logic is as follows:
 
-1.  **Local/Global Pool:** The worker first checks the primary pool provided by the scheduler or the system group to see if any remaining tasks are available.
-2.  **Peer Stealing:** If no tasks remain in the primary pool, the worker attempts to steal tasks from other worker threads.
+1.  **Own local queue and inbox:** the worker first drains its own deque, then its own inbox (jobs a batch publisher or another thief routed to it directly).
+2.  **Shared queue:** if both are empty, the worker pulls a batch from the shared queue (see below) into its own local queue.
+3.  **Peer stealing:** only if the shared queue is also empty does the worker start visiting other workers, checking their inbox first and then stealing a batch straight out of their local deque.
 
 ## Managing Recursive Tasks
 
@@ -33,7 +36,7 @@ A more complex scenario arises with recursive task generation. A system might be
 
 Choosing the right data structure for task queues is critical when dealing with these recursive dependencies:
 
-*   **FIFO (First-In, First-Out):** This is ideal for the global scheduler. Since the scheduler treats system groups as sequential steps, maintaining the entry order ensures that the overall system logic remains predictable.
+*   **FIFO (First-In, First-Out):** This is ideal for the shared queue. Since the scheduler treats system groups as sequential steps, maintaining the entry order ensures that the overall system logic remains predictable.
 *   **LIFO (Last-In, First-Out):** This is preferred for individual worker threads. When a task spawns sub-tasks, it is often more efficient to process the newest sub-tasks immediately. Using a LIFO structure (a stack) allows the worker to focus on the most recently generated dependencies.
 
 ### Why LIFO Works for Stealing
@@ -46,26 +49,22 @@ In practice, however, this buffer does not function as a pure LIFO queue. Only t
 
 In systems where a task is split into parallel sub-tasks, the worker executing the parent task must wait for these sub-tasks to complete before proceeding to the next step. If every worker in the system is occupied by such dependencies, the system risks a deadlock where no worker is available to steal pending tasks from others.
 
-## The LIFO Stack Design
+## The Local Queue Design
 
-To address this, my design uses a LIFO (Last-In, First-Out) stack for each worker. When a task generates multiple sub-tasks, they are pushed onto this stack. This allows workers to prioritize the most recently generated sub-tasks, which is generally more cache-friendly.
+Each worker owns a local queue for its own sub-tasks. When a task generates multiple sub-tasks, they are pushed onto this queue, and the owner pops them back off in LIFO order (see [fifo_and_lifo.md](fifo_and_lifo.md)), which is generally more cache-friendly for freshly-spawned work.
 
-Currently, the LIFO stack in `xynok_concurrency` uses a fixed-size buffer. I chose a fixed size for two primary reasons:
+The local queue in `xynok_concurrency` uses a fixed-size ring buffer. This is a fixed size for two primary reasons:
 
 *   **Memory Safety:** Avoiding re-allocation prevents dangling pointers. If a buffer were to re-allocate, other workers attempting to read from it would encounter invalid memory addresses, necessitating complex synchronization to ensure thread safety.
-*   **Resource Efficiency:** Since tasks migrate between workers across frames, a growable stack would eventually lead to excessive memory allocation scattered across every worker, resulting in significant memory waste.
+*   **Resource Efficiency:** Since tasks migrate between workers across frames, a growable local queue would eventually lead to excessive memory allocation scattered across every worker, resulting in significant memory waste.
 
-## Managing Stack Overflow with Lazy Allocation
+## Overflowing to the Shared Queue
 
-Because the stack has a fixed capacity, it may overflow when a parent task generates a large number of sub-tasks. To handle this without re-allocation, I implement a form of "lazy allocation" (or lazy pushing):
+Because the local queue has a fixed capacity, pushing a sub-task can fail when a parent task generates more sub-tasks than the local queue has room for. An earlier version of this design tried to work around that by lazily splitting the sub-tasks into smaller and smaller batches until one fit, but that added complexity for a case that the pool already had a simpler answer for.
 
-1.  **Check Capacity:** Before pushing sub-tasks, check the available slots in the stack.
-2.  **Partial Pushing:** If the number of sub-tasks is less than or equal to the available space, push them all onto the stack.
-3.  **Recursive Division:** If the number of sub-tasks exceeds the remaining capacity, divide the sub-tasks into smaller batches. For example, if you have 32 sub-tasks and limited space, divide them into smaller groups (e.g., 16, 8, then 4) until a batch fits into the stack.
-4.  **Deferred Processing:** Push only the first batch (e.g., 4 tasks) onto the stack and keep the remaining tasks within the current scope.
-5.  **Iterative Filling:** As workers process the tasks in the stack and free up slots, continue pushing the remaining batches until all sub-tasks have been processed.
+Today, a sub-task that does not fit in the local queue is simply pushed onto the shared queue instead (the same unbounded, FIFO queue described above, and the same queue `ThreadPool::push` writes to). This works cleanly with the stealing priority: any worker that runs out of local and inbox work already checks the shared queue first, before it starts stealing from peers, so an overflowed sub-task gets picked up naturally without any special-casing.
 
-This approach ensures the stack never overflows and eliminates the need for dynamic resizing, keeping the synchronization logic straightforward and the memory footprint predictable.
+This only holds because sub-tasks spawned this way, by construction, do not depend on each other's completion order. A system group is already guaranteed conflict-free before it is scheduled, and something like splitting one query's rows into independent chunks (planned, not yet implemented) only ever touches disjoint rows per chunk. If a future kind of sub-task needed to run before another, spilling it to a shared, unordered queue would not be safe, and it would need a different mechanism.
 
 
 ## References
