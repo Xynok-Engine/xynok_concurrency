@@ -11,6 +11,7 @@ tags:
 
 
 ## References
+- [x] https://www.reddit.com/r/rust/comments/17f5qaa/anything_like_write_your_own_tokioasyncstd/
 - [x] https://www.youtube.com/watch?v=ThjvMReOXYM
 - [ ] https://www.youtube.com/watch?v=9_3krAQtD2k
 - [ ] https://ibraheem.ca/posts/too-many-web-servers/
@@ -24,3 +25,6 @@ tags:
 - [ ] https://redixhumayun.github.io/async/2024/10/10/async-runtimes-part-iii.html
 - [ ] https://rust-lang.github.io/async-book/
 - [ ] https://github.com/mgattozzi/whorl/blob/main/src/lib.rs
+- [ ] https://os.phil-opp.com/async-await/
+- [ ] https://tokio.rs/tokio/tutorial/async
+- [ ] https://doc.rust-lang.org/book/ch16-00-concurrency.html
