@@ -1,8 +1,10 @@
 // CASE: real nonblocking TCP I/O on loopback. No external service needed.
 // Tokio's I/O driver tracks socket readiness and wakes the waiting task.
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> std::io::Result<()> {
+async fn main() -> std::io::Result<()>
+{
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -25,5 +27,7 @@ async fn main() -> std::io::Result<()> {
         };
         tokio::try_join!(server, client)?;
         Ok::<_, std::io::Error>(())
-    }).await.expect("loopback example timed out")
+    })
+    .await
+    .expect("loopback example timed out")
 }
