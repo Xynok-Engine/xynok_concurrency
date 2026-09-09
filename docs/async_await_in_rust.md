@@ -9,76 +9,18 @@ tags:
 
 ## Overview
 
-## What does a `Future` look like?
-
-```rust
-async fn foo1() -> usize
-{
-    println!("foo1: this is a future");
-    10
-}
-
-fn foo2() -> impl std::future::Future<Output = usize>
-{
-    async {
-        println!("foo2: this is also a future");
-        20
-    }
-}
-```
-It's essentially just a transformation directive for the compiler. A piece of code is considered `async` if it creates a `std::future::Future`.
-You can create your own async type, as long as it returns a future.
-<details>
-<summary>Example</summary>
-
-```rust
-struct MyAsync
-{
-    val: usize,
-}
-impl std::future::Future for MyAsync
-{
-    type Output = usize;
-
-    // we'll ignore the content of this poll() for now and revisit it later
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output>
-    {
-        if self.val < 10
-        {
-            Poll::Ready(self.val)
-        }
-        else
-        {
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    }
-}
-
-fn main()
-{
-
-}
-```
-</details>
-
-**How does it actually work?**
-
-```rust 
-#![allow(unused)]
-async fn foo1() -> usize
-{
-    println!("foo1: this is a future");
-    10
-}
-
-fn main()
-{
-    println!("Hello World");
-    let x = foo1();
-}
-// Run this program, and the output will only be: "Hello World"
-```
 
 ## References
-- https://www.youtube.com/watch?v=ThjvMReOXYM
+- [x] https://www.youtube.com/watch?v=ThjvMReOXYM
+- [ ] https://www.youtube.com/watch?v=9_3krAQtD2k
+- [ ] https://ibraheem.ca/posts/too-many-web-servers/
+- [ ] https://web.archive.org/web/20220505033253/https://cfsamson.github.io/books-futures-explained/
+- [ ] https://medium.com/@souravdas08/building-a-minitokio-in-rust-how-does-tokio-work-24c916948e56
+- [ ] https://medium.com/@bartekwinter3/build-an-async-runtime-in-rust-part-1-hooch-d43e3d96c3e6
+- [ ] https://michaelhelvey.dev/posts/rust-async-runtime
+- [ ] https://jacko.io/async_intro.html
+- [ ] https://cubicy.icu/rust-async-demystified-p3/
+- [ ] https://aibodh.com/posts/async-rust-chapter-1-hands-on-intro-to-async-rust/#future
+- [ ] https://redixhumayun.github.io/async/2024/10/10/async-runtimes-part-iii.html
+- [ ] https://rust-lang.github.io/async-book/
+- [ ] https://github.com/mgattozzi/whorl/blob/main/src/lib.rs
