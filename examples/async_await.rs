@@ -56,8 +56,14 @@ fn block_on<F: Future>(future: F) -> F::Output
     }
 }
 
+async fn run()
+{
+    let x = foo1().await;
+    println!("x: {}", x);
+}
 fn main()
 {
-    let result = block_on(foo1());
-    println!("result = {result}");
+    run();
+    //let result = block_on(foo1());
+    //println!("result = {result}");
 }

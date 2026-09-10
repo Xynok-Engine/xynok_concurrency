@@ -3,12 +3,19 @@
 [![discord invite link](https://img.shields.io/discord/1495504680711880714?logo=discord)](https://discord.gg/a2qzfrFzWT)
 
 ## Preface
+Currently, this repo only provides a threadpool for CPU-bound tasks. In the future, I plan to add more tools for IO-bound task pools. 
+I have a plan for it, but the amount of knowledge I need to acquire to build my own implementation and truly understand how async works is massive. 
+I will add it once I feel more confident. 
+
+Regardless, in a game engine, the majority of the work is CPU-bound. Operations involving assets will require more IO-bound handling. 
+Since Xynok-Engine doesn't really have anything yet, I need to focus on other, more important features.
+
+
+## Overview
 This repository contains the tools, utilities, and data types that allow Xynok Engine to manage multi-threading and asynchronous tasks.
 
 In this repo, you will find various types that resemble the synchronization data structures used in [rayon](https://github.com/rayon-rs/rayon), [tokio](https://github.com/tokio-rs/tokio), [smol](https://github.com/smol-rs/smol), or [crossbeam](https://github.com/crossbeam-rs/crossbeam). 
 These are often simpler or exhibit different behaviors to better serve the specific logic required by the engine.
-
-## Overview
 
 ## Install
 ```cargo
@@ -17,29 +24,6 @@ xynok_concurrency = { git = "https://github.com/Xynok-Engine/xynok_concurrency.g
 ```
 
 ## Examples
-
-Use `run_batch` when the complete group of independent jobs is known up front:
-
-```rust
-use xynok_concurrency::thread_pool::{cfg::CfgThreadPool, ThreadPool};
-
-let pool = ThreadPool::new(CfgThreadPool::new("frame", 4));
-let mut values = [1, 2, 3, 4];
-pool.run_batch(values.iter_mut().map(|value| move || *value *= 2));
-assert_eq!(values, [2, 4, 6, 8]);
-```
-
-The pool collects the jobs and assigns them round-robin to the caller and background workers
-before releasing the batch. Each participant runs its own work first, then steals pending work.
-Calls made from a worker distribute across the background workers, without assigning an extra
-share to an inactive caller thread. Assignment balances job counts; it does not pin jobs to threads.
-Concurrent external callers share one host slot; callers without that slot help by stealing
-while their batches are assigned to background workers.
-
-`run_batch` waits for all jobs, including when a job panics. If iteration panics before publication,
-collected jobs are dropped without running. Do not wait for a batch job from inside its iterator.
-For incremental submission where jobs may start during the callback, keep using `scope` and
-`Scope::spawn`. Batch jobs go directly into preallocated worker inboxes without temporary vectors. Inbox storage grows only when its capacity is exceeded.
 
 To run an example, use the following command:
 
