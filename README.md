@@ -20,7 +20,7 @@ These are often simpler or exhibit different behaviors to better serve the speci
 ## Install
 ```cargo
 [dependencies]
-xynok_concurrency = { git = "https://github.com/Xynok-Engine/xynok_concurrency.git", tag = "v0.1.75" }
+xynok_concurrency = { git = "https://github.com/Xynok-Engine/xynok_concurrency.git"}
 ```
 
 ## Examples

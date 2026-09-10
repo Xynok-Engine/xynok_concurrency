@@ -7,6 +7,20 @@ tags:
   - concurrency
 ---
 
+## For Reader
+After spending a full day researching, I have gathered a significant amount of documentation on implementing async properly in Rust. The scope of this work is massive, involving both complex code implementation and a deep dive into underlying system concepts. While I feel confident in building synchronization primitives, the primary hurdle with async, particularly regarding I/O tasks, is the necessity of interfacing directly with the Kernel.
+
+Each operating system handles I/O communication differently. While libraries like `smol` or `mio` simplify this process, I want to understand exactly what is happening under the hood. Most of these existing libraries are primarily optimized for Linux, relying heavily on `epoll`.
+
+As a game engine developer, my goal is cross-platform support. I need to target Linux, macOS, Windows, and potentially mobile or console platforms. To achieve a truly robust and cross-platform implementation, I need a deep understanding of how these libraries interact with their respective Kernels.
+
+I have looked into Bevy, but it currently lacks support for a wide range of I/O protocols. It is limited to a few basic operations, whereas a production-ready game engine requires support for TCP and various other networking protocols. If I were to commit to building this out myself, I would likely spend several months just on research and implementation. 
+
+Given the complexity and the current state of my understanding, I have decided to pause this work. I need to prioritize other critical features for the engine. 
+
+- Game engines are predominantly CPU-bound rather than I/O-bound. It makes more sense to focus on CPU-intensive tasks first. 
+- I am not abandoning the topic. I will continue to dedicate time each day to studying async patterns and Kernel internals so that I am better prepared to tackle this when the time is right.
+
 ## Overview
 Nothing to see here yet, as I'm still diving into this topic.
 

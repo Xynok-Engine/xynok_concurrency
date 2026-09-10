@@ -1,6 +1,6 @@
 [package]
 name = "xynok_concurrency"
-version = "0.1.88"
+version = "0.2.0"
 edition = "2024"
 
 
