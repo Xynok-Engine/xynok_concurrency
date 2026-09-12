@@ -61,23 +61,3 @@ Each run explores one fixed interleaving. To sweep several:
 MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo miri test --lib
 ```
 
-
-
-I have been working on the next phase of the Xynok concurrency library. My primary goal is to implement asynchronous tasks using `async` and `await` syntax and integrate them into the existing work-stealing thread pool. While I have explored these concepts previously, I am now focused on a robust, full-scale implementation that allows these tasks to function seamlessly within the library's architecture.
-
-## The Challenge of Building from Scratch
-
-I am genuinely surprised by how little documentation exists on this topic. While there are plenty of resources explaining high-level concepts and mental models, actual implementation details are almost nonexistent. Most available guides rely on external crates, and I have found very few people attempting to build an `async` runtime or a custom thread pool from scratch using only Rust's built-in primitives.
-
-The only reliable reference I have found is the Tokio library. However, their documentation focuses primarily on usage rather than implementation. To truly understand how their system works, one is forced to dive deep into their source code.
-
-It feels strange that even though Rust has been stable since version 1.0, there is still such a lack of detailed guides on building a complete system that includes:
-* A custom thread pool.
-* A polling IO reactor.
-* A full `async` / `await` task lifecycle.
-
-Building this from the ground up is a significant challenge. I wishing I could reference how others have approached this to ensure I am on the right track. Relying heavily on LLMs like Claude or ChatGPT has been helpful, but I sometimes feel a bit discouraged by the lack of human-led discussions or community-shared experiences on this specific path.
-
-I am currently relying on LLMs to help navigate the complexities of this implementation, but I remain cautious. I am constantly questioning whether my approach is sound or if I am missing a fundamental piece of the puzzle. If I am going to document this process for others, I want to be certain that the foundation I am building is solid. For now, I will continue to dig through the code and iterate on my implementation, hoping that this effort will eventually provide the clarity I have been looking for.
-
-
